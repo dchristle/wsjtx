@@ -27,7 +27,12 @@
 
 #define NFFT 32768
 
-Map65TxWave& iwave = *new Map65TxWave{};
+namespace {
+struct Map65TxWaveStorage { Map65TxWave samples; };
+struct Map65RxSamplesStorage { Map65RxSamples samples; };
+}
+
+Map65TxWave& iwave = (new Map65TxWaveStorage{})->samples;
 int nwave;                            //Length of Tx waveform
 bool btxok;                           //True if OK to transmit
 bool bTune;
@@ -36,7 +41,7 @@ double outputLatency;                 //Latency in seconds
 int txPower;
 int iqAmp;
 int iqPhase;
-Map65RxSamples& id = *new Map65RxSamples{};
+Map65RxSamples& id = (new Map65RxSamplesStorage{})->samples;
 
 TxTune*    g_pTxTune = NULL;
 QSharedMemory mem_m65("mem_m65");
