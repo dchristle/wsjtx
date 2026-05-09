@@ -13,7 +13,7 @@
 #include <portaudio.h>
 extern "C"
 {
-  struct
+  extern struct
   {
     double d8[2*60*96000];   //This is "common/datcom/..." in fortran
     float ss[4*322*NFFT];
