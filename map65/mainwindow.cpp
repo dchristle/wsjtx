@@ -27,7 +27,7 @@
 
 #define NFFT 32768
 
-short int iwave[2*60*12000];          //Wave file for Tx audio
+Map65TxWave& iwave = *new Map65TxWave{};
 int nwave;                            //Length of Tx waveform
 bool btxok;                           //True if OK to transmit
 bool bTune;
@@ -36,7 +36,7 @@ double outputLatency;                 //Latency in seconds
 int txPower;
 int iqAmp;
 int iqPhase;
-qint16 id[4*60*96000];
+Map65RxSamples& id = *new Map65RxSamples{};
 
 TxTune*    g_pTxTune = NULL;
 QSharedMemory mem_m65("mem_m65");

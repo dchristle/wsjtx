@@ -5,6 +5,9 @@
 
 #include <QString>
 
+using Map65RxSamples = qint16[4*60*96000];
+using Map65TxWave = short int[2*60*12000];
+
 extern "C" {
 
 extern struct {                     //This is "common/datcom/..." in Fortran

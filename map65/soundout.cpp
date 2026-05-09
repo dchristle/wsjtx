@@ -7,10 +7,11 @@
 #define FRAMES_PER_BUFFER 256
 
 #include <portaudio.h>
+#include "commons.h"
 
 extern float gran();                  //Noise generator (for tests only)
 
-extern short int iwave[2*60*11025];   //Wave file for Tx audio
+extern Map65TxWave& iwave;
 extern int nwave;
 extern bool btxok;
 extern bool bTune;
