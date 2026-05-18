@@ -31,6 +31,19 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Verify macOS build tuple
+        run: |
+          case "${{ inputs.arch }}:${{ inputs.runner }}:${{ inputs.deployment_target }}" in
+            arm64:macos-15:11.0|x86_64:macos-15-intel:10.13)
+              echo "Using supported macOS build tuple: ${{ inputs.arch }} on ${{ inputs.runner }} targeting ${{ inputs.deployment_target }}"
+              ;;
+            *)
+              echo "::error::Unsupported macOS build tuple: arch=${{ inputs.arch }}, runner=${{ inputs.runner }}, deployment_target=${{ inputs.deployment_target }}"
+              echo "::error::Use arm64:macos-15:11.0 or x86_64:macos-15-intel:10.13. Do not use macos-latest for release artifacts."
+              exit 1
+              ;;
+          esac
+
       - name: Check signing secrets
         id: check_secrets
         env:
@@ -47,21 +60,36 @@ jobs:
         run: echo "HOMEBREW_PREFIX=$(brew --prefix)" >> "$GITHUB_ENV"
 
       - name: Install dependencies
-        run: brew install cmake gcc fftw boost qt@5 libusb dylibbundler autoconf automake libtool asciidoctor
+        run: brew install cmake gcc qt@5 dylibbundler autoconf automake libtool asciidoctor
 
       - name: Locate gfortran
         id: fc
         run: |
           FC="$(brew --prefix gcc)/bin/gfortran"
-          [ -f "$FC" ] || FC="$(ls $HOMEBREW_PREFIX/bin/gfortran-* 2>/dev/null | sort -V | tail -1)"
+          [ -f "$FC" ] || FC="$(ls $HOMEBREW_PREFIX/bin/gfortran-* 2>/dev/null | sort | tail -1)"
           echo "Found gfortran: $FC"
           echo "path=$FC" >> "$GITHUB_OUTPUT"
+          GCC_PREFIX="$(brew --prefix gcc)"
+          echo "prefix=${GCC_PREFIX}" >> "$GITHUB_OUTPUT"
+          RUNTIME_LINK_FLAGS=""
+          for lib in \
+            "$("$FC" -print-file-name=libgfortran.a)" \
+            "$("$FC" -print-file-name=libquadmath.a)" \
+            "$("$FC" -print-libgcc-file-name)"
+          do
+            if [ -f "$lib" ]; then
+              RUNTIME_LINK_FLAGS="${RUNTIME_LINK_FLAGS} ${lib}"
+            fi
+          done
+          echo "runtime_link_flags=${RUNTIME_LINK_FLAGS# }" >> "$GITHUB_OUTPUT"
 
       - name: Fix Qt5 keg-only paths
+        id: qt5
         run: |
           QT5_PREFIX="$(brew --prefix qt@5)"
           [ -e $HOMEBREW_PREFIX/mkspecs ] || sudo ln -s "${QT5_PREFIX}/mkspecs" $HOMEBREW_PREFIX/mkspecs
           [ -e $HOMEBREW_PREFIX/plugins ] || sudo ln -s "${QT5_PREFIX}/plugins" $HOMEBREW_PREFIX/plugins
+          echo "prefix=${QT5_PREFIX}" >> "$GITHUB_OUTPUT"
 
       - name: Cache pFUnit
         id: pfunit-cache
@@ -97,15 +125,40 @@ jobs:
           echo "Found PFUNITConfig.cmake at: $CONFIG"
           echo "dir=${PFUNIT_DIR}" >> "$GITHUB_OUTPUT"
 
+      - name: Cache libusb
+        id: libusb-cache
+        uses: actions/cache@v5
+        with:
+          path: libusb-prefix
+          key: libusb-macos-${{ inputs.arch }}-1.0.27-min${{ inputs.deployment_target }}-${{ hashFiles('.github/workflows/build-macos.yml') }}
+
+      - name: Build libusb
+        if: steps.libusb-cache.outputs.cache-hit != 'true'
+        run: |
+          LIBUSB_VERSION=1.0.27
+          curl -L -o libusb.tar.bz2 "https://github.com/libusb/libusb/releases/download/v${LIBUSB_VERSION}/libusb-${LIBUSB_VERSION}.tar.bz2"
+          tar -xjf libusb.tar.bz2
+          cd "libusb-${LIBUSB_VERSION}"
+
+          ./configure \
+            --prefix="${GITHUB_WORKSPACE}/libusb-prefix" \
+            --enable-shared --disable-static \
+            CFLAGS="-mmacosx-version-min=${{ inputs.deployment_target }}" \
+            LDFLAGS="-mmacosx-version-min=${{ inputs.deployment_target }}"
+          make -j"$(sysctl -n hw.ncpu)"
+          make install
+
       - name: Cache Hamlib
         id: hamlib-cache
         uses: actions/cache@v5
         with:
           path: hamlib-prefix
-          key: hamlib-macos-${{ inputs.arch }}-${{ inputs.hamlib_branch }}-${{ hashFiles('.github/workflows/build-macos.yml') }}
+          key: hamlib-macos-${{ inputs.arch }}-${{ inputs.hamlib_branch }}-min${{ inputs.deployment_target }}-${{ hashFiles('.github/workflows/build-macos.yml') }}
 
       - name: Build Hamlib
         if: steps.hamlib-cache.outputs.cache-hit != 'true'
+        env:
+          PKG_CONFIG_PATH: ${{ github.workspace }}/libusb-prefix/lib/pkgconfig
         run: |
           git clone --depth 1 --branch "${{ inputs.hamlib_branch }}" \
             https://github.com/Hamlib/Hamlib.git hamlib-src
@@ -114,21 +167,111 @@ jobs:
           ./configure \
             --prefix="${GITHUB_WORKSPACE}/hamlib-prefix" \
             --disable-shared --enable-static \
-            --without-cxx-binding
+            --without-cxx-binding \
+            CFLAGS="-mmacosx-version-min=${{ inputs.deployment_target }}" \
+            LDFLAGS="-mmacosx-version-min=${{ inputs.deployment_target }}"
           make -j$(sysctl -n hw.ncpu)
           make install
+
+      - name: Cache FFTW
+        id: fftw-cache
+        uses: actions/cache@v5
+        with:
+          path: fftw-prefix
+          key: fftw-macos-${{ inputs.arch }}-3.3.10-min${{ inputs.deployment_target }}-${{ hashFiles('.github/workflows/build-macos.yml') }}
+
+      - name: Build FFTW
+        if: steps.fftw-cache.outputs.cache-hit != 'true'
+        run: |
+          FFTW_VERSION=3.3.10
+          curl -L -o fftw.tar.gz "https://www.fftw.org/fftw-${FFTW_VERSION}.tar.gz"
+          tar -xzf fftw.tar.gz
+          cd "fftw-${FFTW_VERSION}"
+
+          ./configure \
+            --prefix="${GITHUB_WORKSPACE}/fftw-prefix" \
+            --enable-single \
+            --enable-threads \
+            --enable-shared --disable-static \
+            CFLAGS="-mmacosx-version-min=${{ inputs.deployment_target }}" \
+            LDFLAGS="-mmacosx-version-min=${{ inputs.deployment_target }}"
+          make -j"$(sysctl -n hw.ncpu)"
+          make install
+
+      - name: Cache Boost
+        id: boost-cache
+        uses: actions/cache@v5
+        with:
+          path: boost-prefix
+          key: boost-macos-${{ inputs.arch }}-1.85.0-min${{ inputs.deployment_target }}-${{ hashFiles('.github/workflows/build-macos.yml') }}
+
+      - name: Build Boost
+        if: steps.boost-cache.outputs.cache-hit != 'true'
+        run: |
+          BOOST_VERSION=1.85.0
+          BOOST_VERSION_UNDERSCORES=${BOOST_VERSION//./_}
+          BOOST_ARCH=x86
+          if [ "${{ inputs.arch }}" = "arm64" ]; then
+            BOOST_ARCH=arm
+          fi
+
+          curl -L -o boost.tar.bz2 "https://archives.boost.io/release/${BOOST_VERSION}/source/boost_${BOOST_VERSION_UNDERSCORES}.tar.bz2"
+          tar -xjf boost.tar.bz2
+          cd "boost_${BOOST_VERSION_UNDERSCORES}"
+
+          ./bootstrap.sh --prefix="${GITHUB_WORKSPACE}/boost-prefix" --with-libraries=log
+          ./b2 -j"$(sysctl -n hw.ncpu)" \
+            toolset=clang \
+            variant=release \
+            link=shared \
+            runtime-link=shared \
+            threading=multi \
+            cxxstd=11 \
+            cflags="-mmacosx-version-min=${{ inputs.deployment_target }}" \
+            cxxflags="-mmacosx-version-min=${{ inputs.deployment_target }}" \
+            linkflags="-mmacosx-version-min=${{ inputs.deployment_target }}" \
+            architecture="${BOOST_ARCH}" \
+            address-model=64 \
+            install
 
       - name: Configure
         run: |
           cmake -S . -B wsjtx-build \
-            -DCMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/hamlib-prefix;${GITHUB_WORKSPACE}/pfunit-prefix;$(brew --prefix qt@5);$(brew --prefix libusb);$(brew --prefix fftw);$(brew --prefix boost)" \
+            -DCMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/boost-prefix;${GITHUB_WORKSPACE}/fftw-prefix;${GITHUB_WORKSPACE}/libusb-prefix;${GITHUB_WORKSPACE}/hamlib-prefix;${GITHUB_WORKSPACE}/pfunit-prefix;$(brew --prefix qt@5)" \
             -DCMAKE_Fortran_COMPILER="${{ steps.fc.outputs.path }}" \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=${{ inputs.deployment_target }} \
+            -DCMAKE_EXE_LINKER_FLAGS="${{ steps.fc.outputs.runtime_link_flags }}" \
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
             -DWSJT_SKIP_MANPAGES=ON \
             -DWSJT_BUILD_TESTS=ON \
             -DPFUNIT_DIR="${{ steps.pfunit.outputs.dir }}" \
             -Wno-dev
+
+      - name: Verify resolved dependency prefixes
+        run: |
+          CACHE=wsjtx-build/CMakeCache.txt
+          BAD=$(awk -F= '
+            /^(Boost_DIR|Boost_INCLUDE_DIR|Boost_LOG_LIBRARY_RELEASE|Boost_LOG_SETUP_LIBRARY_RELEASE|FFTW3F_LIBRARY|FFTW3F_THREADS_LIBRARY|FFTW3_INCLUDE_DIR|Hamlib_INCLUDE_DIR|Hamlib_LIBRARY|Usb_INCLUDE_DIR|Usb_LIBRARY):/ && $2 ~ /^(\/opt\/homebrew|\/usr\/local\/Cellar|\/usr\/local\/opt|\/opt\/local)/ {
+              print
+            }
+          ' "$CACHE")
+          if [ -n "$BAD" ]; then
+            echo "::error::Deployable macOS build resolved bundled dependencies from a package-manager prefix:"
+            echo "$BAD"
+            exit 1
+          fi
+
+      - name: Verify built dependency deployment targets
+        run: |
+          .github/scripts/verify-macos-artifacts.sh \
+            --target "${{ inputs.deployment_target }}" \
+            --arch "${{ inputs.arch }}" \
+            --allow-prefix "${GITHUB_WORKSPACE}/boost-prefix" \
+            --allow-prefix "${GITHUB_WORKSPACE}/fftw-prefix" \
+            --allow-prefix "${GITHUB_WORKSPACE}/libusb-prefix" \
+            "${GITHUB_WORKSPACE}/boost-prefix" \
+            "${GITHUB_WORKSPACE}/fftw-prefix" \
+            "${GITHUB_WORKSPACE}/libusb-prefix"
 
       - name: Build
         run: cmake --build wsjtx-build -j$(sysctl -n hw.ncpu)
@@ -187,10 +330,10 @@ jobs:
           STAGE="${{ steps.collect.outputs.stage_dir }}"
           APP="${STAGE}/wsjtx.app"
           FRAMEWORKS="${APP}/Contents/Frameworks"
-          GCC_LIB="$(brew --prefix gcc)/lib/gcc/current"
+          GCC_LIB="${{ steps.fc.outputs.prefix }}/lib/gcc/current"
           mkdir -p "${FRAMEWORKS}"
 
-          "$(brew --prefix qt@5)/bin/macdeployqt" "${APP}" -verbose=1
+          "${{ steps.qt5.outputs.prefix }}/bin/macdeployqt" "${APP}" -verbose=1
 
           resolve_lib() {
             local lib="$1"
@@ -243,8 +386,9 @@ jobs:
           echo "Checking for remaining external references..."
           REMAINING=$(find "${APP}/Contents/MacOS" -type f -perm +111 -exec otool -L {} \; 2>/dev/null | grep "$HOMEBREW_PREFIX" || true)
           if [ -n "$REMAINING" ]; then
-            echo "WARNING: External paths still present:"
+            echo "::error::External Homebrew paths still present:"
             echo "$REMAINING"
+            exit 1
           else
             echo "All dylibs bundled successfully"
           fi
@@ -264,7 +408,6 @@ jobs:
           done
           dylibbundler -od -b $BUNDLE_ARGS -d "${LIBDIR}/" -p @loader_path/lib/
 
-          QT5="$(brew --prefix qt@5)/lib"
           for bin in "${ASSETS}"/*; do
             [ -f "$bin" ] && [ -x "$bin" ] && [ "$(basename "$bin")" != "lib" ] || continue
             for fw in $(otool -L "$bin" | awk '{print $1}' | grep '\.framework/'); do
@@ -314,6 +457,14 @@ jobs:
               cp "$bin" "${STAGE}/$(basename "$bin")"
             }
           done
+
+      - name: Verify bundled macOS deployment targets
+        run: |
+          STAGE="${{ steps.collect.outputs.stage_dir }}"
+          .github/scripts/verify-macos-artifacts.sh \
+            --target "${{ inputs.deployment_target }}" \
+            --arch "${{ inputs.arch }}" \
+            "$STAGE"
 
       - name: Import signing certificates
         if: steps.check_secrets.outputs.signing_enabled == 'true'
