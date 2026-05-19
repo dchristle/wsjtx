@@ -45,7 +45,7 @@ jobs:
           echo "Parity check PASSED."
 
   # ── Build all five platforms ───────────────────────────────────────
-  macos-qt-arm64:
+  macos-arm64-qt:
     needs: prepare
     uses: ./.github/workflows/prepare-macos-qt.yml
     with:
@@ -53,7 +53,7 @@ jobs:
       runner: "macos-15"
       deployment_target: "11.0"
 
-  macos-qt-x86_64:
+  macos-intel-qt:
     needs: prepare
     uses: ./.github/workflows/prepare-macos-qt.yml
     with:
@@ -62,7 +62,7 @@ jobs:
       deployment_target: "10.13"
 
   macos:
-    needs: [prepare, macos-qt-arm64]
+    needs: [prepare, macos-arm64-qt]
     uses: ./.github/workflows/build-macos.yml
     with:
       version: ${{ needs.prepare.outputs.version }}
@@ -73,7 +73,7 @@ jobs:
     secrets: inherit
 
   macos-intel:
-    needs: [prepare, macos-qt-x86_64]
+    needs: [prepare, macos-intel-qt]
     uses: ./.github/workflows/build-macos.yml
     with:
       version: ${{ needs.prepare.outputs.version }}
