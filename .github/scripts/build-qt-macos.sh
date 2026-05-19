@@ -142,8 +142,6 @@ configure_args=(
   -skip qtsensors
   -skip qtserialbus
   -skip qtspeech
-  -skip qtsvg
-  -skip qttranslations
   -skip qtvirtualkeyboard
   -skip qtwayland
   -skip qtwebchannel
