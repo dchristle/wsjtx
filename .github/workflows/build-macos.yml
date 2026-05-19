@@ -60,7 +60,32 @@ jobs:
         run: echo "HOMEBREW_PREFIX=$(brew --prefix)" >> "$GITHUB_ENV"
 
       - name: Install dependencies
-        run: brew install cmake gcc qt@5 dylibbundler autoconf automake libtool asciidoctor
+        run: brew install cmake gcc dylibbundler autoconf automake libtool asciidoctor
+
+      - name: Compute Qt cache key
+        id: qt-key
+        run: |
+          .github/scripts/macos-qt-cache-key.sh \
+            --arch "${{ inputs.arch }}" \
+            --runner "${{ inputs.runner }}" \
+            --deployment-target "${{ inputs.deployment_target }}" \
+            --github-output
+
+      - name: Restore Qt cache
+        id: qt-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: qt-prefix
+          key: ${{ steps.qt-key.outputs.key }}
+          fail-on-cache-miss: true
+
+      - name: Verify cached Qt deployment target
+        run: |
+          .github/scripts/verify-macos-artifacts.sh \
+            --target "${{ inputs.deployment_target }}" \
+            --arch "${{ inputs.arch }}" \
+            --allow-prefix "${GITHUB_WORKSPACE}/qt-prefix" \
+            "${GITHUB_WORKSPACE}/qt-prefix"
 
       - name: Locate gfortran
         id: fc
@@ -82,14 +107,6 @@ jobs:
             fi
           done
           echo "runtime_link_flags=${RUNTIME_LINK_FLAGS# }" >> "$GITHUB_OUTPUT"
-
-      - name: Fix Qt5 keg-only paths
-        id: qt5
-        run: |
-          QT5_PREFIX="$(brew --prefix qt@5)"
-          [ -e $HOMEBREW_PREFIX/mkspecs ] || sudo ln -s "${QT5_PREFIX}/mkspecs" $HOMEBREW_PREFIX/mkspecs
-          [ -e $HOMEBREW_PREFIX/plugins ] || sudo ln -s "${QT5_PREFIX}/plugins" $HOMEBREW_PREFIX/plugins
-          echo "prefix=${QT5_PREFIX}" >> "$GITHUB_OUTPUT"
 
       - name: Cache pFUnit
         id: pfunit-cache
@@ -237,7 +254,7 @@ jobs:
       - name: Configure
         run: |
           cmake -S . -B wsjtx-build \
-            -DCMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/boost-prefix;${GITHUB_WORKSPACE}/fftw-prefix;${GITHUB_WORKSPACE}/libusb-prefix;${GITHUB_WORKSPACE}/hamlib-prefix;${GITHUB_WORKSPACE}/pfunit-prefix;$(brew --prefix qt@5)" \
+            -DCMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/qt-prefix;${GITHUB_WORKSPACE}/boost-prefix;${GITHUB_WORKSPACE}/fftw-prefix;${GITHUB_WORKSPACE}/libusb-prefix;${GITHUB_WORKSPACE}/hamlib-prefix;${GITHUB_WORKSPACE}/pfunit-prefix" \
             -DCMAKE_Fortran_COMPILER="${{ steps.fc.outputs.path }}" \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=${{ inputs.deployment_target }} \
             -DCMAKE_EXE_LINKER_FLAGS="${{ steps.fc.outputs.runtime_link_flags }}" \
@@ -251,13 +268,24 @@ jobs:
         run: |
           CACHE=wsjtx-build/CMakeCache.txt
           BAD=$(awk -F= '
-            /^(Boost_DIR|Boost_INCLUDE_DIR|Boost_LOG_LIBRARY_RELEASE|Boost_LOG_SETUP_LIBRARY_RELEASE|FFTW3F_LIBRARY|FFTW3F_THREADS_LIBRARY|FFTW3_INCLUDE_DIR|Hamlib_INCLUDE_DIR|Hamlib_LIBRARY|Usb_INCLUDE_DIR|Usb_LIBRARY):/ && $2 ~ /^(\/opt\/homebrew|\/usr\/local\/Cellar|\/usr\/local\/opt|\/opt\/local)/ {
+            /^(Boost_DIR|Boost_INCLUDE_DIR|Boost_LOG_LIBRARY_RELEASE|Boost_LOG_SETUP_LIBRARY_RELEASE|FFTW3F_LIBRARY|FFTW3F_THREADS_LIBRARY|FFTW3_INCLUDE_DIR|Hamlib_INCLUDE_DIR|Hamlib_LIBRARY|Usb_INCLUDE_DIR|Usb_LIBRARY|Qt5[^:]*_DIR|Qt5[^:]*_EXECUTABLE):/ && $2 ~ /^(\/opt\/homebrew|\/usr\/local\/Cellar|\/usr\/local\/opt|\/opt\/local)/ {
               print
             }
           ' "$CACHE")
           if [ -n "$BAD" ]; then
             echo "::error::Deployable macOS build resolved bundled dependencies from a package-manager prefix:"
             echo "$BAD"
+            exit 1
+          fi
+
+          QT_BAD=$(awk -F= -v prefix="${GITHUB_WORKSPACE}/qt-prefix" '
+            /^Qt5[^:]*_(DIR|EXECUTABLE):/ && index($2, prefix) != 1 {
+              print
+            }
+          ' "$CACHE")
+          if [ -n "$QT_BAD" ]; then
+            echo "::error::Deployable macOS build did not resolve Qt from the cached qt-prefix:"
+            echo "$QT_BAD"
             exit 1
           fi
 
@@ -333,7 +361,7 @@ jobs:
           GCC_LIB="${{ steps.fc.outputs.prefix }}/lib/gcc/current"
           mkdir -p "${FRAMEWORKS}"
 
-          "${{ steps.qt5.outputs.prefix }}/bin/macdeployqt" "${APP}" -verbose=1
+          "${GITHUB_WORKSPACE}/qt-prefix/bin/macdeployqt" "${APP}" -verbose=1
 
           resolve_lib() {
             local lib="$1"
