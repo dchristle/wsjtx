@@ -99,6 +99,7 @@ jobs:
           RUNTIME_LINK_FLAGS=""
           for lib in \
             "$("$FC" -print-file-name=libgfortran.a)" \
+            "$("$FC" -print-file-name=libgomp.a)" \
             "$("$FC" -print-file-name=libquadmath.a)" \
             "$("$FC" -print-libgcc-file-name)"
           do
@@ -382,6 +383,12 @@ jobs:
               resolved=$(resolve_lib "$lib")
               [ -z "$resolved" ] && continue
               local libname=$(basename "$resolved")
+              case "$libname" in
+                libgomp*.dylib)
+                  echo "::error::Refusing to bundle ${resolved}; libgomp must be linked statically for deployable macOS artifacts."
+                  exit 1
+                  ;;
+              esac
               if [ ! -f "${FRAMEWORKS}/${libname}" ]; then
                 echo "  Bundling: $resolved -> ${FRAMEWORKS}/${libname}"
                 cp "$resolved" "${FRAMEWORKS}/${libname}"
@@ -435,6 +442,12 @@ jobs:
             }
           done
           dylibbundler -od -b $BUNDLE_ARGS -d "${LIBDIR}/" -p @loader_path/lib/
+
+          if find "${LIBDIR}" -name "libgomp*.dylib" -print -quit | grep -q .; then
+            echo "::error::Refusing to bundle dynamic libgomp; it must be linked statically for deployable macOS artifacts."
+            find "${LIBDIR}" -name "libgomp*.dylib"
+            exit 1
+          fi
 
           for bin in "${ASSETS}"/*; do
             [ -f "$bin" ] && [ -x "$bin" ] && [ "$(basename "$bin")" != "lib" ] || continue
