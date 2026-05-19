@@ -1032,6 +1032,21 @@ find_package (Boost 1.62 REQUIRED COMPONENTS log_setup log)
 #
 find_package (OpenMP)
 
+if (APPLE)
+  set (WSJT_MACOS_LIBGOMP_LIBRARY "" CACHE FILEPATH "Path to the static GNU OpenMP runtime archive")
+  if (NOT WSJT_MACOS_LIBGOMP_LIBRARY)
+    execute_process (
+      COMMAND ${CMAKE_Fortran_COMPILER} -print-file-name=libgomp.a
+      OUTPUT_VARIABLE WSJT_MACOS_LIBGOMP_LIBRARY
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      ERROR_QUIET
+      )
+  endif ()
+  if (NOT WSJT_MACOS_LIBGOMP_LIBRARY OR NOT EXISTS "${WSJT_MACOS_LIBGOMP_LIBRARY}")
+    message (FATAL_ERROR "Static GNU OpenMP runtime archive not found; set WSJT_MACOS_LIBGOMP_LIBRARY")
+  endif ()
+endif ()
+
 #
 # fftw3 single precision library
 #
@@ -1290,8 +1305,8 @@ if (${OPENMP_FOUND} OR APPLE)
     )
   file (MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/fortran_modules_omp)
   if (APPLE)
-    # On  Mac  we don't  have  working  OpenMP  support in  the  C/C++
-    # compilers so  we have to manually  set the correct flags  to get
+    # On Mac we don't have working OpenMP support in the C/C++
+    # compilers so we have to manually set the correct flags to get
     # OpenMP support in jt9.
     target_compile_options (wsjt_fort_omp
       PRIVATE
@@ -1603,7 +1618,6 @@ if (${OPENMP_FOUND} OR APPLE)
     set_target_properties (jt9
       PROPERTIES
       Fortran_MODULE_DIRECTORY ${CMAKE_BINARY_DIR}/fortran_modules_omp
-      LINK_LIBRARIES "gomp;gcc_s.1" # assume GNU libgcc OpenMP
       )
     target_compile_options (jt9
       PRIVATE
@@ -1627,7 +1641,11 @@ if (${OPENMP_FOUND} OR APPLE)
       LINK_FLAGS -Wl,--stack,16777216
       )
   endif ()
-  target_link_libraries (jt9 wsjt_fort_omp wsjt_cxx fort_qt)
+  if (APPLE)
+    target_link_libraries (jt9 wsjt_fort_omp wsjt_cxx fort_qt "${WSJT_MACOS_LIBGOMP_LIBRARY}" gcc_s.1)
+  else ()
+    target_link_libraries (jt9 wsjt_fort_omp wsjt_cxx fort_qt)
+  endif ()
 else (${OPENMP_FOUND} OR APPLE)
   target_link_libraries (jt9 wsjt_fort wsjt_cxx fort_qt)
 endif (${OPENMP_FOUND} OR APPLE)
