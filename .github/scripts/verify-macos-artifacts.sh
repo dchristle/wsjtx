@@ -106,6 +106,7 @@ check_file() {
   local archs
   local minos
   local refs
+  local install_name
 
   archs=$(lipo -archs "$file" 2>/dev/null || true)
   if [ -n "$archs" ] && ! printf '%s\n' "$archs" | tr ' ' '\n' | grep -qx "$arch"; then
@@ -124,9 +125,16 @@ check_file() {
     fail=1
   fi
 
+  install_name=$(otool -D "$file" 2>/dev/null | awk 'NR == 2 { print $1 }' || true)
   refs=$(otool -L "$file" 2>/dev/null | awk 'NR > 1 { print $1 }' || true)
   while IFS= read -r ref; do
     [ -n "$ref" ] || continue
+    if [ "$ref" = "$install_name" ]; then
+      case "$ref" in
+        */*) ;;
+        *) continue ;;
+      esac
+    fi
     case "$ref" in
       /opt/homebrew/*|/usr/local/Cellar/*|/usr/local/opt/*|/opt/local/*)
         echo "::error file=${file}::Package-manager runtime reference is not allowed: ${ref}"
