@@ -9,10 +9,13 @@ Verifies static archives before they are linked into deployable macOS binaries:
   * expected architecture
   * object-member deployment targets not newer than --target
 
---mode error (default) fails the build on any finding. --mode warn downgrades
-findings to GitHub warning annotations and exits 0, so the check can be
-observed without gating the build (member deployment targets in third-party
-toolchain archives are outside this workflow's control).
+--mode error (default) fails the build on any finding. --mode warn keeps
+structural problems (missing archive, wrong architecture) fatal but
+downgrades object-member deployment-target findings to warning annotations
+and exits 0. Member deployment targets in third-party toolchain archives
+are outside this workflow's control, so only that uncertain signal is made
+non-blocking; a missing input or wrong-arch archive is broken plumbing and
+always fails.
 USAGE
 }
 
@@ -96,7 +99,8 @@ version_gt() {
 
 check_archive() {
   local archive="$1"
-  local fail=0
+  local structural_fail=0
+  local target_fail=0
   local archs
   local line
   local member=""
@@ -107,14 +111,14 @@ check_archive() {
   local suppressed=0
 
   if [ ! -f "$archive" ]; then
-    echo "::${ann}::Static archive does not exist: ${archive}"
-    return 1
+    echo "::error::Static archive does not exist: ${archive}"
+    return 2
   fi
 
   archs=$(lipo -archs "$archive" 2>/dev/null || true)
   if [ -n "$archs" ] && ! printf '%s\n' "$archs" | tr ' ' '\n' | grep -qx "$arch"; then
-    echo "::${ann} file=${archive}::Expected architecture ${arch}, found: ${archs}"
-    fail=1
+    echo "::error file=${archive}::Expected architecture ${arch}, found: ${archs}"
+    structural_fail=1
   fi
 
   while IFS= read -r line; do
@@ -134,8 +138,7 @@ check_archive() {
         ;;
       *" minos "*)
         if [ "$in_build" -eq 1 ]; then
-          set -- $line
-          minos="$2"
+          read -r _ minos _ <<< "$line"
           if version_gt "$minos" "$target"; then
             if [ "$reported" -lt "$max_member_errors" ]; then
               echo "::${ann} file=${archive}::${member} requires macOS ${minos}, newer than archive target ${target}"
@@ -143,15 +146,14 @@ check_archive() {
               suppressed=$((suppressed + 1))
             fi
             reported=$((reported + 1))
-            fail=1
+            target_fail=1
           fi
           in_build=0
         fi
         ;;
       *" version "*)
         if [ "$in_old" -eq 1 ]; then
-          set -- $line
-          minos="$2"
+          read -r _ minos _ <<< "$line"
           if version_gt "$minos" "$target"; then
             if [ "$reported" -lt "$max_member_errors" ]; then
               echo "::${ann} file=${archive}::${member} requires macOS ${minos}, newer than archive target ${target}"
@@ -159,7 +161,7 @@ check_archive() {
               suppressed=$((suppressed + 1))
             fi
             reported=$((reported + 1))
-            fail=1
+            target_fail=1
           fi
           in_old=0
         fi
@@ -171,19 +173,38 @@ check_archive() {
     echo "::${ann} file=${archive}::Suppressed ${suppressed} additional archive member deployment-target findings"
   fi
 
-  return "$fail"
+  # 2 = structural problem (always fatal), 1 = deployment-target finding
+  # (respects --mode), 0 = clean.
+  if [ "$structural_fail" -ne 0 ]; then
+    return 2
+  fi
+  if [ "$target_fail" -ne 0 ]; then
+    return 1
+  fi
+  return 0
 }
 
-overall=0
+overall_structural=0
+overall_target=0
 for archive in "${archives[@]}"; do
-  check_archive "$archive" || overall=1
+  rc=0
+  check_archive "$archive" || rc=$?
+  case "$rc" in
+    2) overall_structural=1 ;;
+    1) overall_target=1 ;;
+  esac
 done
 
-if [ "$overall" -ne 0 ]; then
+if [ "$overall_structural" -ne 0 ]; then
+  echo "::error::Static archive verification failed: missing archive or wrong architecture is always fatal."
+  exit 1
+fi
+
+if [ "$overall_target" -ne 0 ]; then
   if [ "$mode" = "error" ]; then
-    exit "$overall"
+    exit 1
   fi
-  echo "::notice::Static archive verification reported findings in warn mode; not failing the build."
+  echo "::notice::Static archive verification reported deployment-target findings in warn mode; not failing the build."
   exit 0
 fi
 
