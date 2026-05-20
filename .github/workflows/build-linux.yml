@@ -26,8 +26,25 @@ jobs:
 
       - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          apt_retry() {
+            local attempt
+            for attempt in 1 2 3; do
+              if sudo apt-get "$@"; then
+                return 0
+              fi
+              if [ "$attempt" -eq 3 ]; then
+                return 1
+              fi
+              echo "::warning::apt-get $* failed on attempt ${attempt}; retrying after refreshing package lists"
+              sleep $((attempt * 20))
+              sudo rm -rf /var/lib/apt/lists/*
+              sudo apt-get update -o Acquire::Retries=3
+            done
+          }
+
+          apt_retry update -o Acquire::Retries=3
+          apt_retry install -y \
+            -o Acquire::Retries=3 \
             build-essential cmake gfortran \
             libfftw3-dev libboost-all-dev \
             qtbase5-dev qttools5-dev qtmultimedia5-dev libqt5serialport5-dev \

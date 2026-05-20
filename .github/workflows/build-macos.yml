@@ -494,6 +494,7 @@ jobs:
           ASSETS="${{ steps.collect.outputs.assets_dir }}"
           STAGE="${{ steps.collect.outputs.stage_dir }}"
           LIBDIR="${ASSETS}/lib"
+          GCC_LIB="${{ steps.fc.outputs.prefix }}/lib/gcc/current"
           mkdir -p "${LIBDIR}"
 
           dump_cli_context() {
@@ -503,6 +504,7 @@ jobs:
             echo "::error::Bundle dylibs into CLI tools failed at line ${line} with status ${status}: ${command}"
             echo "ASSETS=${ASSETS}"
             echo "LIBDIR=${LIBDIR}"
+            echo "GCC_LIB=${GCC_LIB}"
             echo "HOMEBREW_PREFIX=${HOMEBREW_PREFIX}"
             echo "Asset contents:"
             ls -la "${ASSETS}" || true
@@ -522,43 +524,108 @@ jobs:
             "$@"
           }
 
-          BUNDLE_ARGS=""
-          for bin in "${ASSETS}"/*; do
-            [ -f "$bin" ] && [ -x "$bin" ] && [ "$(basename "$bin")" != "lib" ] && {
-              BUNDLE_ARGS="$BUNDLE_ARGS -x $bin"
-            }
-          done
-          run_logged dylibbundler -od -b $BUNDLE_ARGS -d "${LIBDIR}/" -p @loader_path/lib/
+          resolve_cli_ref() {
+            local ref="$1"
+            local name suffix
 
-          if find "${LIBDIR}" -name "libgomp*.dylib" -print -quit | grep -q .; then
-            echo "::error::Refusing to bundle dynamic libgomp; it must be linked statically for deployable macOS artifacts."
-            find "${LIBDIR}" -name "libgomp*.dylib"
-            exit 1
-          fi
+            case "$ref" in
+              /usr/lib/*|/System/Library/*)
+                return 0
+                ;;
+              @loader_path/lib/*)
+                name="${ref#@loader_path/lib/}"
+                [ -f "${LIBDIR}/${name}" ] && echo "${LIBDIR}/${name}"
+                return 0
+                ;;
+              @loader_path/*)
+                name="${ref#@loader_path/}"
+                [ -f "${LIBDIR}/${name}" ] && echo "${LIBDIR}/${name}"
+                return 0
+                ;;
+              "$GITHUB_WORKSPACE"/*|"$HOMEBREW_PREFIX"/*)
+                echo "$ref"
+                return 0
+                ;;
+            esac
+
+            if [[ "$ref" == @rpath/* ]]; then
+              suffix="${ref#@rpath/}"
+              if [[ "$suffix" == *.framework/* ]]; then
+                for dir in \
+                  "${STAGE}/wsjtx.app/Contents/Frameworks" \
+                  "${GITHUB_WORKSPACE}/qt-prefix/lib"
+                do
+                  [ -f "${dir}/${suffix}" ] && echo "${dir}/${suffix}" && return 0
+                done
+              else
+                name="${suffix}"
+                for dir in \
+                  "${LIBDIR}" \
+                  "${STAGE}/wsjtx.app/Contents/Frameworks" \
+                  "${GITHUB_WORKSPACE}/boost-prefix/lib" \
+                  "${GITHUB_WORKSPACE}/fftw-prefix/lib" \
+                  "${GITHUB_WORKSPACE}/libusb-prefix/lib" \
+                  "${GCC_LIB}" \
+                  "${HOMEBREW_PREFIX}/lib"
+                do
+                  [ -f "${dir}/${name}" ] && echo "${dir}/${name}" && return 0
+                done
+              fi
+            fi
+
+            return 0
+          }
+
+          bundle_cli_deps() {
+            local binary="$1"
+            local change_prefix="$2"
+            local ref resolved out name
+
+            while IFS= read -r ref; do
+              resolved=$(resolve_cli_ref "$ref")
+              if [ -z "$resolved" ]; then
+                case "$ref" in
+                  @rpath/*|@loader_path/*|"$GITHUB_WORKSPACE"/*|"$HOMEBREW_PREFIX"/*)
+                    echo "::error::Could not resolve ${ref} required by ${binary}"
+                    exit 1
+                    ;;
+                  *)
+                    continue
+                    ;;
+                esac
+              fi
+
+              name="$(basename "$resolved")"
+              case "$name" in
+                libgomp*.dylib)
+                  echo "::error::Refusing to bundle ${resolved}; libgomp must be linked statically for deployable macOS artifacts."
+                  exit 1
+                  ;;
+              esac
+
+              out="${LIBDIR}/${name}"
+              if [ ! -f "$out" ]; then
+                echo "  Bundling: ${resolved} -> ${out}"
+                run_logged cp "$resolved" "$out"
+                run_logged chmod 644 "$out"
+                run_logged install_name_tool -id "@loader_path/${name}" "$out"
+                bundle_cli_deps "$out" "@loader_path"
+              fi
+
+              run_logged install_name_tool -change "$ref" "${change_prefix}/${name}" "$binary"
+            done < <(otool -L "$binary" | awk 'NR > 1 {print $1}' | grep -E "($HOMEBREW_PREFIX|$GITHUB_WORKSPACE|@rpath|@loader_path)" || true)
+          }
 
           for bin in "${ASSETS}"/*; do
             [ -f "$bin" ] && [ -x "$bin" ] && [ "$(basename "$bin")" != "lib" ] || continue
-            for fw in $(otool -L "$bin" | awk '{print $1}' | grep '\.framework/' || true); do
-              fwname=$(basename "$fw")
-              if [ ! -f "${LIBDIR}/${fwname}" ]; then
-                echo "  Bundling framework: ${fwname}"
-                run_logged cp "$fw" "${LIBDIR}/${fwname}"
-                run_logged chmod 644 "${LIBDIR}/${fwname}"
-                run_logged install_name_tool -id "@loader_path/lib/${fwname}" "${LIBDIR}/${fwname}"
-                dylibbundler -b -x "${LIBDIR}/${fwname}" -d "${LIBDIR}/" -p @loader_path/ 2>/dev/null || true
-              fi
-              run_logged install_name_tool -change "$fw" "@loader_path/lib/${fwname}" "$bin"
-              run_logged codesign --force --sign - "$bin"
-            done
+            bundle_cli_deps "$bin" "@loader_path/lib"
+            run_logged codesign --force --sign - "$bin"
           done
 
           for lib in "${LIBDIR}"/*; do
             [ -f "$lib" ] || continue
-            for dep in $(otool -L "$lib" | awk '{print $1}' | grep '@loader_path/lib/' || true); do
-              depname=$(basename "$dep")
-              install_name_tool -change "$dep" "@loader_path/${depname}" "$lib" 2>/dev/null || true
-            done
-            RPATHS=$(otool -l "$lib" | grep -A2 LC_RPATH | grep "path " | awk '{print $2}' | sort | uniq -d)
+            bundle_cli_deps "$lib" "@loader_path"
+            RPATHS=$(otool -l "$lib" | grep -A2 LC_RPATH | grep "path " | awk '{print $2}' | sort | uniq -d || true)
             for rp in $RPATHS; do
               install_name_tool -delete_rpath "$rp" "$lib" 2>/dev/null || true
               install_name_tool -add_rpath "$rp" "$lib" 2>/dev/null || true
