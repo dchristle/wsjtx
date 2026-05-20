@@ -62,6 +62,15 @@ if [ -z "$target" ] || [ -z "$arch" ] || [ "${#paths[@]}" -eq 0 ]; then
   exit 2
 fi
 
+# Validate that all target paths exist before checking
+for path in "${paths[@]}"; do
+  if [ ! -e "$path" ]; then
+    echo "::error::Path does not exist: $path" >&2
+    exit 2
+  fi
+done
+
+
 version_gt() {
   awk -v a="$1" -v b="$2" '
     BEGIN {

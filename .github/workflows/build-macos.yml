@@ -401,11 +401,8 @@ jobs:
           }
 
           echo "Running macdeployqt..."
-          set +e
-          "${GITHUB_WORKSPACE}/qt-prefix/bin/macdeployqt" "${APP}" -verbose=2 > macdeployqt.log 2>&1
-          status=$?
-          set -e
-          if [ "$status" -ne 0 ]; then
+          if ! "${GITHUB_WORKSPACE}/qt-prefix/bin/macdeployqt" "${APP}" -verbose=2 > macdeployqt.log 2>&1; then
+            status=$?
             echo "::error::macdeployqt failed with status ${status}"
             dump_bundle_context "$status" "$LINENO" "macdeployqt"
             exit "$status"
@@ -441,7 +438,10 @@ jobs:
             for lib in $(otool -L "$binary" | awk '{print $1}' | grep -E "($HOMEBREW_PREFIX|$GITHUB_WORKSPACE|@rpath)" | grep -v Qt || true); do
               local resolved
               resolved=$(resolve_lib "$lib")
-              [ -z "$resolved" ] && continue
+              if [ -z "$resolved" ]; then
+                echo "::error::Could not resolve ${lib} required by ${binary}"
+                exit 1
+              fi
               local libname=$(basename "$resolved")
               case "$libname" in
                 libgomp*.dylib)
@@ -621,21 +621,37 @@ jobs:
           ensure_cli_rpath() {
             local binary="$1"
             local rpath
-
-            if otool -l "$binary" | awk '/LC_RPATH/{getline; getline; print $2}' | grep -Fxq "@loader_path/lib"; then
-              return 0
-            fi
+            local bad_rpaths=()
+            local unique_bad_rpaths=()
 
             while IFS= read -r rpath; do
+              [ -n "$rpath" ] || continue
               case "$rpath" in
                 "$GITHUB_WORKSPACE"/*|"$HOMEBREW_PREFIX"/*)
-                  run_logged install_name_tool -rpath "$rpath" "@loader_path/lib" "$binary"
-                  return 0
+                  bad_rpaths+=("$rpath")
                   ;;
               esac
             done < <(otool -l "$binary" | awk '/LC_RPATH/{getline; getline; print $2}' || true)
 
-            run_logged install_name_tool -add_rpath "@loader_path/lib" "$binary"
+            # Deduplicate bad rpaths (compatible with macOS Bash 3.2)
+            for rpath in "${bad_rpaths[@]}"; do
+              local found=0
+              local u
+              for u in "${unique_bad_rpaths[@]}"; do
+                [ "$u" = "$rpath" ] && found=1 && break
+              done
+              [ "$found" -eq 0 ] && unique_bad_rpaths+=("$rpath")
+            done
+
+            for rpath in "${unique_bad_rpaths[@]}"; do
+              run_logged install_name_tool -delete_rpath "$rpath" "$binary"
+            done
+
+            if [ "${#unique_bad_rpaths[@]}" -gt 0 ] || ! otool -l "$binary" | awk '/LC_RPATH/{getline; getline; print $2}' | grep -Fxq "@loader_path/lib"; then
+              if ! otool -l "$binary" | awk '/LC_RPATH/{getline; getline; print $2}' | grep -Fxq "@loader_path/lib"; then
+                run_logged install_name_tool -add_rpath "@loader_path/lib" "$binary"
+              fi
+            fi
           }
 
           for bin in "${ASSETS}"/*; do
@@ -757,8 +773,10 @@ jobs:
           find "${APP}/Contents/Frameworks" -name "*.framework" -type d | while read fw; do
             codesign --force --options runtime $TS --sign "$IDENTITY" "$fw"
           done
-          find "${APP}/Contents/PlugIns" -type f -name "*.dylib" \
-            -exec codesign --force --options runtime $TS --sign "$IDENTITY" {} \; 2>/dev/null || true
+          if [ -d "${APP}/Contents/PlugIns" ]; then
+            find "${APP}/Contents/PlugIns" -type f -name "*.dylib" \
+              -exec codesign --force --options runtime $TS --sign "$IDENTITY" {} \;
+          fi
 
           find "${APP}/Contents/MacOS" -type f -perm +111 \
             -exec codesign --force --options runtime --entitlements "$ENTITLEMENTS" $TS --sign "$IDENTITY" {} \;
