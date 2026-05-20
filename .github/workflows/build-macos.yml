@@ -538,7 +538,7 @@ jobs:
 
           resolve_cli_ref() {
             local ref="$1"
-            local name suffix
+            local name="" suffix=""
 
             case "$ref" in
               /usr/lib/*|/System/Library/*)
@@ -666,10 +666,8 @@ jobs:
               done
             fi
 
-            if [ "${#unique_bad_rpaths[@]}" -gt 0 ] || ! otool -l "$binary" | awk '/LC_RPATH/{getline; getline; print $2}' | grep -Fxq "@loader_path/lib"; then
-              if ! otool -l "$binary" | awk '/LC_RPATH/{getline; getline; print $2}' | grep -Fxq "@loader_path/lib"; then
-                run_logged install_name_tool -add_rpath "@loader_path/lib" "$binary"
-              fi
+            if ! otool -l "$binary" | awk '/LC_RPATH/{getline; getline; print $2}' | grep -Fxq "@loader_path/lib"; then
+              run_logged install_name_tool -add_rpath "@loader_path/lib" "$binary"
             fi
           }
 
