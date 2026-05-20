@@ -416,17 +416,29 @@ jobs:
             local lib="$1"
             if [[ "$lib" == $HOMEBREW_PREFIX/* ]]; then
               echo "$lib"
+              return 0
+            elif [[ "$lib" == $GITHUB_WORKSPACE/* ]]; then
+              echo "$lib"
+              return 0
             elif [[ "$lib" == @rpath/* ]]; then
               local name="${lib#@rpath/}"
-              for dir in "$GCC_LIB" "$HOMEBREW_PREFIX/lib"; do
+              for dir in \
+                "$FRAMEWORKS" \
+                "$GITHUB_WORKSPACE/boost-prefix/lib" \
+                "$GITHUB_WORKSPACE/fftw-prefix/lib" \
+                "$GITHUB_WORKSPACE/libusb-prefix/lib" \
+                "$GCC_LIB" \
+                "$HOMEBREW_PREFIX/lib"
+              do
                 [ -f "$dir/$name" ] && echo "$dir/$name" && return
               done
             fi
+            return 0
           }
 
           bundle_dylib() {
             local binary="$1"
-            for lib in $(otool -L "$binary" | awk '{print $1}' | grep -E "($HOMEBREW_PREFIX|@rpath)" | grep -v Qt || true); do
+            for lib in $(otool -L "$binary" | awk '{print $1}' | grep -E "($HOMEBREW_PREFIX|$GITHUB_WORKSPACE|@rpath)" | grep -v Qt || true); do
               local resolved
               resolved=$(resolve_lib "$lib")
               [ -z "$resolved" ] && continue
