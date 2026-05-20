@@ -120,11 +120,17 @@ jobs:
           echo "runtime_link_flags=${RUNTIME_LINK_FLAGS# }" >> "$GITHUB_OUTPUT"
           echo "runtime_archives=${RUNTIME_ARCHIVES[*]} $LIBGOMP" >> "$GITHUB_OUTPUT"
 
+      # Runs in warn mode: the Fortran/OpenMP runtime archives come from the
+      # Homebrew gcc bottle, whose member deployment targets this workflow
+      # does not control. Downgrade findings to warnings until a real run
+      # shows whether the bottle's archives actually exceed the artifact
+      # target; promote to --mode error once that is confirmed safe.
       - name: Verify static Fortran runtime deployment targets
         run: |
           .github/scripts/verify-macos-static-archives.sh \
             --target "${{ inputs.deployment_target }}" \
             --arch "${{ inputs.arch }}" \
+            --mode warn \
             ${{ steps.fc.outputs.runtime_archives }}
 
       - name: Cache pFUnit

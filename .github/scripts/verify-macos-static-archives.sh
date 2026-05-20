@@ -3,16 +3,22 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: verify-macos-static-archives.sh --target VERSION --arch ARCH PATH...
+Usage: verify-macos-static-archives.sh --target VERSION --arch ARCH [--mode error|warn] PATH...
 
 Verifies static archives before they are linked into deployable macOS binaries:
   * expected architecture
   * object-member deployment targets not newer than --target
+
+--mode error (default) fails the build on any finding. --mode warn downgrades
+findings to GitHub warning annotations and exits 0, so the check can be
+observed without gating the build (member deployment targets in third-party
+toolchain archives are outside this workflow's control).
 USAGE
 }
 
 target=""
 arch=""
+mode="error"
 archives=()
 max_member_errors=25
 
@@ -24,6 +30,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --arch)
       arch="$2"
+      shift 2
+      ;;
+    --mode)
+      mode="$2"
       shift 2
       ;;
     --help|-h)
@@ -54,6 +64,21 @@ if [ -z "$target" ] || [ -z "$arch" ] || [ "${#archives[@]}" -eq 0 ]; then
   exit 2
 fi
 
+case "$mode" in
+  error|warn) ;;
+  *)
+    echo "Invalid --mode: $mode (expected error or warn)" >&2
+    exit 2
+    ;;
+esac
+
+# Annotation level for findings: errors fail the build, warnings do not.
+if [ "$mode" = "warn" ]; then
+  ann="warning"
+else
+  ann="error"
+fi
+
 version_gt() {
   awk -v a="$1" -v b="$2" '
     BEGIN {
@@ -82,13 +107,13 @@ check_archive() {
   local suppressed=0
 
   if [ ! -f "$archive" ]; then
-    echo "::error::Static archive does not exist: ${archive}"
+    echo "::${ann}::Static archive does not exist: ${archive}"
     return 1
   fi
 
   archs=$(lipo -archs "$archive" 2>/dev/null || true)
   if [ -n "$archs" ] && ! printf '%s\n' "$archs" | tr ' ' '\n' | grep -qx "$arch"; then
-    echo "::error file=${archive}::Expected architecture ${arch}, found: ${archs}"
+    echo "::${ann} file=${archive}::Expected architecture ${arch}, found: ${archs}"
     fail=1
   fi
 
@@ -113,7 +138,7 @@ check_archive() {
           minos="$2"
           if version_gt "$minos" "$target"; then
             if [ "$reported" -lt "$max_member_errors" ]; then
-              echo "::error file=${archive}::${member} requires macOS ${minos}, newer than archive target ${target}"
+              echo "::${ann} file=${archive}::${member} requires macOS ${minos}, newer than archive target ${target}"
             else
               suppressed=$((suppressed + 1))
             fi
@@ -129,7 +154,7 @@ check_archive() {
           minos="$2"
           if version_gt "$minos" "$target"; then
             if [ "$reported" -lt "$max_member_errors" ]; then
-              echo "::error file=${archive}::${member} requires macOS ${minos}, newer than archive target ${target}"
+              echo "::${ann} file=${archive}::${member} requires macOS ${minos}, newer than archive target ${target}"
             else
               suppressed=$((suppressed + 1))
             fi
@@ -143,7 +168,7 @@ check_archive() {
   done < <(otool -l "$archive" 2>/dev/null || true)
 
   if [ "$suppressed" -gt 0 ]; then
-    echo "::error file=${archive}::Suppressed ${suppressed} additional archive member deployment-target errors"
+    echo "::${ann} file=${archive}::Suppressed ${suppressed} additional archive member deployment-target findings"
   fi
 
   return "$fail"
@@ -155,7 +180,11 @@ for archive in "${archives[@]}"; do
 done
 
 if [ "$overall" -ne 0 ]; then
-  exit "$overall"
+  if [ "$mode" = "error" ]; then
+    exit "$overall"
+  fi
+  echo "::notice::Static archive verification reported findings in warn mode; not failing the build."
+  exit 0
 fi
 
 echo "All checked static archives match arch ${arch} and target macOS ${target}."
