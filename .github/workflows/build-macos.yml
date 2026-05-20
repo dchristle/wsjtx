@@ -388,7 +388,7 @@ jobs:
 
           bundle_dylib() {
             local binary="$1"
-            for lib in $(otool -L "$binary" | awk '{print $1}' | grep -E "($HOMEBREW_PREFIX|@rpath)" | grep -v Qt); do
+            for lib in $(otool -L "$binary" | awk '{print $1}' | grep -E "($HOMEBREW_PREFIX|@rpath)" | grep -v Qt || true); do
               local resolved
               resolved=$(resolve_lib "$lib")
               [ -z "$resolved" ] && continue
@@ -413,7 +413,7 @@ jobs:
           for exe in "${APP}/Contents/MacOS/"*; do
             [ -f "$exe" ] && [ -x "$exe" ] && {
               bundle_dylib "$exe"
-              for fw in $(otool -L "$exe" | awk '{print $1}' | grep '\.framework/'); do
+              for fw in $(otool -L "$exe" | awk '{print $1}' | grep '\.framework/' || true); do
                 fwname=$(basename "$fw")
                 bundled=$(find "${FRAMEWORKS}" -name "${fwname}" -path "*.framework/*" 2>/dev/null | head -1)
                 if [ -n "$bundled" ]; then
@@ -461,7 +461,7 @@ jobs:
 
           for bin in "${ASSETS}"/*; do
             [ -f "$bin" ] && [ -x "$bin" ] && [ "$(basename "$bin")" != "lib" ] || continue
-            for fw in $(otool -L "$bin" | awk '{print $1}' | grep '\.framework/'); do
+            for fw in $(otool -L "$bin" | awk '{print $1}' | grep '\.framework/' || true); do
               fwname=$(basename "$fw")
               if [ ! -f "${LIBDIR}/${fwname}" ]; then
                 echo "  Bundling framework: ${fwname}"
@@ -477,7 +477,7 @@ jobs:
 
           for lib in "${LIBDIR}"/*; do
             [ -f "$lib" ] || continue
-            for dep in $(otool -L "$lib" | awk '{print $1}' | grep '@loader_path/lib/'); do
+            for dep in $(otool -L "$lib" | awk '{print $1}' | grep '@loader_path/lib/' || true); do
               depname=$(basename "$dep")
               install_name_tool -change "$dep" "@loader_path/${depname}" "$lib" 2>/dev/null || true
             done
