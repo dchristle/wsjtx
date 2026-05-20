@@ -11,7 +11,7 @@ on:
         description: "Hamlib branch to build"
         required: false
         type: string
-        default: "4.7.0"
+        default: "4.7.1"
       arch:
         description: "Target architecture (arm64 or x86_64)"
         required: true
@@ -60,7 +60,7 @@ jobs:
         run: echo "HOMEBREW_PREFIX=$(brew --prefix)" >> "$GITHUB_ENV"
 
       - name: Install dependencies
-        run: brew install cmake gcc dylibbundler autoconf automake libtool asciidoctor
+        run: brew install cmake gcc autoconf automake libtool asciidoctor
 
       - name: Compute Qt cache key
         id: qt-key
@@ -106,6 +106,7 @@ jobs:
           echo "fortran_runtime_flags=-static-libgcc -static-libgfortran -static-libquadmath" >> "$GITHUB_OUTPUT"
 
           RUNTIME_LINK_FLAGS=""
+          RUNTIME_ARCHIVES=()
           for lib in \
             "$("$FC" -print-file-name=libgfortran.a)" \
             "$("$FC" -print-file-name=libquadmath.a)" \
@@ -113,30 +114,41 @@ jobs:
           do
             if [ -f "$lib" ]; then
               RUNTIME_LINK_FLAGS="${RUNTIME_LINK_FLAGS} ${lib}"
+              RUNTIME_ARCHIVES+=("$lib")
             fi
           done
           echo "runtime_link_flags=${RUNTIME_LINK_FLAGS# }" >> "$GITHUB_OUTPUT"
+          echo "runtime_archives=${RUNTIME_ARCHIVES[*]} $LIBGOMP" >> "$GITHUB_OUTPUT"
+
+      - name: Verify static Fortran runtime deployment targets
+        run: |
+          .github/scripts/verify-macos-static-archives.sh \
+            --target "${{ inputs.deployment_target }}" \
+            --arch "${{ inputs.arch }}" \
+            ${{ steps.fc.outputs.runtime_archives }}
 
       - name: Cache pFUnit
         id: pfunit-cache
-        uses: actions/cache@v5
+        uses: actions/cache/restore@v5
         with:
           path: pfunit-prefix
-          key: pfunit-macos-${{ inputs.arch }}-v4.9.0-${{ hashFiles('.github/workflows/build-macos.yml') }}
+          key: pfunit-macos-${{ inputs.arch }}-${{ inputs.runner }}-v4.9.0-min${{ inputs.deployment_target }}-${{ hashFiles('.github/scripts/build-pfunit-macos.sh') }}
 
       - name: Build pFUnit
         if: steps.pfunit-cache.outputs.cache-hit != 'true'
         run: |
-          git clone --depth 1 --branch v4.9.0 --recursive \
-            https://github.com/Goddard-Fortran-Ecosystem/pFUnit.git pfunit-src
-          cmake -S pfunit-src -B pfunit-build \
-            -DSKIP_MPI=YES \
-            -DSKIP_OPENMP=YES \
-            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-            -DCMAKE_Fortran_COMPILER="${{ steps.fc.outputs.path }}" \
-            -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/pfunit-prefix"
-          cmake --build pfunit-build -j$(sysctl -n hw.ncpu)
-          cmake --install pfunit-build
+          .github/scripts/build-pfunit-macos.sh \
+            v4.9.0 \
+            "${{ steps.fc.outputs.path }}" \
+            "${GITHUB_WORKSPACE}/pfunit-prefix"
+
+      - name: Save pFUnit cache
+        if: steps.pfunit-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: pfunit-prefix
+          key: pfunit-macos-${{ inputs.arch }}-${{ inputs.runner }}-v4.9.0-min${{ inputs.deployment_target }}-${{ hashFiles('.github/scripts/build-pfunit-macos.sh') }}
 
       - name: Locate pFUnit config
         id: pfunit
@@ -153,112 +165,98 @@ jobs:
 
       - name: Cache libusb
         id: libusb-cache
-        uses: actions/cache@v5
+        uses: actions/cache/restore@v5
         with:
           path: libusb-prefix
-          key: libusb-macos-${{ inputs.arch }}-1.0.27-min${{ inputs.deployment_target }}-${{ hashFiles('.github/workflows/build-macos.yml') }}
+          key: libusb-macos-${{ inputs.arch }}-${{ inputs.runner }}-1.0.27-min${{ inputs.deployment_target }}-${{ hashFiles('.github/scripts/build-libusb-macos.sh') }}
 
       - name: Build libusb
         if: steps.libusb-cache.outputs.cache-hit != 'true'
         run: |
-          LIBUSB_VERSION=1.0.27
-          curl -L -o libusb.tar.bz2 "https://github.com/libusb/libusb/releases/download/v${LIBUSB_VERSION}/libusb-${LIBUSB_VERSION}.tar.bz2"
-          tar -xjf libusb.tar.bz2
-          cd "libusb-${LIBUSB_VERSION}"
+          .github/scripts/build-libusb-macos.sh \
+            1.0.27 \
+            "${{ inputs.deployment_target }}" \
+            "${GITHUB_WORKSPACE}/libusb-prefix"
 
-          ./configure \
-            --prefix="${GITHUB_WORKSPACE}/libusb-prefix" \
-            --enable-shared --disable-static \
-            CFLAGS="-mmacosx-version-min=${{ inputs.deployment_target }}" \
-            LDFLAGS="-mmacosx-version-min=${{ inputs.deployment_target }}"
-          make -j"$(sysctl -n hw.ncpu)"
-          make install
+      - name: Save libusb cache
+        if: steps.libusb-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: libusb-prefix
+          key: libusb-macos-${{ inputs.arch }}-${{ inputs.runner }}-1.0.27-min${{ inputs.deployment_target }}-${{ hashFiles('.github/scripts/build-libusb-macos.sh') }}
 
       - name: Cache Hamlib
         id: hamlib-cache
-        uses: actions/cache@v5
+        uses: actions/cache/restore@v5
         with:
           path: hamlib-prefix
-          key: hamlib-macos-${{ inputs.arch }}-${{ inputs.hamlib_branch }}-min${{ inputs.deployment_target }}-${{ hashFiles('.github/workflows/build-macos.yml') }}
+          key: hamlib-macos-${{ inputs.arch }}-${{ inputs.runner }}-${{ inputs.hamlib_branch }}-min${{ inputs.deployment_target }}-${{ hashFiles('.github/scripts/build-hamlib-macos.sh') }}
 
       - name: Build Hamlib
         if: steps.hamlib-cache.outputs.cache-hit != 'true'
         env:
           PKG_CONFIG_PATH: ${{ github.workspace }}/libusb-prefix/lib/pkgconfig
         run: |
-          git clone --depth 1 --branch "${{ inputs.hamlib_branch }}" \
-            https://github.com/Hamlib/Hamlib.git hamlib-src
-          cd hamlib-src
-          ./bootstrap
-          ./configure \
-            --prefix="${GITHUB_WORKSPACE}/hamlib-prefix" \
-            --disable-shared --enable-static \
-            --without-cxx-binding \
-            CFLAGS="-mmacosx-version-min=${{ inputs.deployment_target }}" \
-            LDFLAGS="-mmacosx-version-min=${{ inputs.deployment_target }}"
-          make -j$(sysctl -n hw.ncpu)
-          make install
+          .github/scripts/build-hamlib-macos.sh \
+            "${{ inputs.hamlib_branch }}" \
+            "${{ inputs.deployment_target }}" \
+            "${GITHUB_WORKSPACE}/hamlib-prefix"
+
+      - name: Save Hamlib cache
+        if: steps.hamlib-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: hamlib-prefix
+          key: hamlib-macos-${{ inputs.arch }}-${{ inputs.runner }}-${{ inputs.hamlib_branch }}-min${{ inputs.deployment_target }}-${{ hashFiles('.github/scripts/build-hamlib-macos.sh') }}
 
       - name: Cache FFTW
         id: fftw-cache
-        uses: actions/cache@v5
+        uses: actions/cache/restore@v5
         with:
           path: fftw-prefix
-          key: fftw-macos-${{ inputs.arch }}-3.3.10-min${{ inputs.deployment_target }}-${{ hashFiles('.github/workflows/build-macos.yml') }}
+          key: fftw-macos-${{ inputs.arch }}-${{ inputs.runner }}-3.3.10-min${{ inputs.deployment_target }}-${{ hashFiles('.github/scripts/build-fftw-macos.sh') }}
 
       - name: Build FFTW
         if: steps.fftw-cache.outputs.cache-hit != 'true'
         run: |
-          FFTW_VERSION=3.3.10
-          curl -L -o fftw.tar.gz "https://www.fftw.org/fftw-${FFTW_VERSION}.tar.gz"
-          tar -xzf fftw.tar.gz
-          cd "fftw-${FFTW_VERSION}"
+          .github/scripts/build-fftw-macos.sh \
+            3.3.10 \
+            "${{ inputs.deployment_target }}" \
+            "${GITHUB_WORKSPACE}/fftw-prefix"
 
-          ./configure \
-            --prefix="${GITHUB_WORKSPACE}/fftw-prefix" \
-            --enable-single \
-            --enable-threads \
-            --enable-shared --disable-static \
-            CFLAGS="-mmacosx-version-min=${{ inputs.deployment_target }}" \
-            LDFLAGS="-mmacosx-version-min=${{ inputs.deployment_target }}"
-          make -j"$(sysctl -n hw.ncpu)"
-          make install
+      - name: Save FFTW cache
+        if: steps.fftw-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: fftw-prefix
+          key: fftw-macos-${{ inputs.arch }}-${{ inputs.runner }}-3.3.10-min${{ inputs.deployment_target }}-${{ hashFiles('.github/scripts/build-fftw-macos.sh') }}
 
       - name: Cache Boost
         id: boost-cache
-        uses: actions/cache@v5
+        uses: actions/cache/restore@v5
         with:
           path: boost-prefix
-          key: boost-macos-${{ inputs.arch }}-1.85.0-min${{ inputs.deployment_target }}-${{ hashFiles('.github/workflows/build-macos.yml') }}
+          key: boost-macos-${{ inputs.arch }}-${{ inputs.runner }}-1.85.0-min${{ inputs.deployment_target }}-${{ hashFiles('.github/scripts/build-boost-macos.sh') }}
 
       - name: Build Boost
         if: steps.boost-cache.outputs.cache-hit != 'true'
         run: |
-          BOOST_VERSION=1.85.0
-          BOOST_VERSION_UNDERSCORES=${BOOST_VERSION//./_}
-          BOOST_ARCH=x86
-          if [ "${{ inputs.arch }}" = "arm64" ]; then
-            BOOST_ARCH=arm
-          fi
+          .github/scripts/build-boost-macos.sh \
+            1.85.0 \
+            "${{ inputs.arch }}" \
+            "${{ inputs.deployment_target }}" \
+            "${GITHUB_WORKSPACE}/boost-prefix"
 
-          curl -L -o boost.tar.bz2 "https://archives.boost.io/release/${BOOST_VERSION}/source/boost_${BOOST_VERSION_UNDERSCORES}.tar.bz2"
-          tar -xjf boost.tar.bz2
-          cd "boost_${BOOST_VERSION_UNDERSCORES}"
-
-          ./bootstrap.sh --prefix="${GITHUB_WORKSPACE}/boost-prefix" --with-libraries=log
-          ./b2 -j"$(sysctl -n hw.ncpu)" \
-            toolset=clang \
-            variant=release \
-            link=shared \
-            runtime-link=shared \
-            threading=multi \
-            cxxstd=11 \
-            cflags="-mmacosx-version-min=${{ inputs.deployment_target }}" \
-            cxxflags="-mmacosx-version-min=${{ inputs.deployment_target }}" \
-            linkflags="-mmacosx-version-min=${{ inputs.deployment_target }}" \
-            architecture="${BOOST_ARCH}" \
-            address-model=64 \
-            install
+      - name: Save Boost cache
+        if: steps.boost-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: boost-prefix
+          key: boost-macos-${{ inputs.arch }}-${{ inputs.runner }}-1.85.0-min${{ inputs.deployment_target }}-${{ hashFiles('.github/scripts/build-boost-macos.sh') }}
 
       - name: Configure
         run: |
@@ -366,7 +364,7 @@ jobs:
 
       - name: Bundle dylibs into app
         run: |
-          set -E
+          set -Eeuo pipefail
           STAGE="${{ steps.collect.outputs.stage_dir }}"
           APP="${STAGE}/wsjtx.app"
           FRAMEWORKS="${APP}/Contents/Frameworks"
@@ -401,8 +399,11 @@ jobs:
           }
 
           echo "Running macdeployqt..."
-          if ! "${GITHUB_WORKSPACE}/qt-prefix/bin/macdeployqt" "${APP}" -verbose=2 > macdeployqt.log 2>&1; then
-            status=$?
+          set +e
+          "${GITHUB_WORKSPACE}/qt-prefix/bin/macdeployqt" "${APP}" -verbose=2 > macdeployqt.log 2>&1
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ]; then
             echo "::error::macdeployqt failed with status ${status}"
             dump_bundle_context "$status" "$LINENO" "macdeployqt"
             exit "$status"
@@ -442,7 +443,8 @@ jobs:
                 echo "::error::Could not resolve ${lib} required by ${binary}"
                 exit 1
               fi
-              local libname=$(basename "$resolved")
+              local libname
+              libname=$(basename "$resolved")
               case "$libname" in
                 libgomp*.dylib)
                   echo "::error::Refusing to bundle ${resolved}; libgomp must be linked statically for deployable macOS artifacts."
@@ -456,7 +458,9 @@ jobs:
                 run_logged install_name_tool -id "@executable_path/../Frameworks/${libname}" "${FRAMEWORKS}/${libname}"
                 bundle_dylib "${FRAMEWORKS}/${libname}"
               fi
-              install_name_tool -change "$lib" "@executable_path/../Frameworks/${libname}" "$binary" 2>/dev/null || true
+              if [ "$lib" != "@executable_path/../Frameworks/${libname}" ]; then
+                run_logged install_name_tool -change "$lib" "@executable_path/../Frameworks/${libname}" "$binary"
+              fi
             done
           }
 
@@ -468,7 +472,9 @@ jobs:
                 bundled=$(find "${FRAMEWORKS}" -name "${fwname}" -path "*.framework/*" 2>/dev/null | head -1)
                 if [ -n "$bundled" ]; then
                   fwrel="${bundled#${APP}/Contents/}"
-                  install_name_tool -change "$fw" "@executable_path/../${fwrel}" "$exe" 2>/dev/null || true
+                  if [ "$fw" != "@executable_path/../${fwrel}" ]; then
+                    run_logged install_name_tool -change "$fw" "@executable_path/../${fwrel}" "$exe"
+                  fi
                 fi
               done
             }
@@ -490,7 +496,7 @@ jobs:
 
       - name: Bundle dylibs into CLI tools
         run: |
-          set -E
+          set -Eeuo pipefail
           ASSETS="${{ steps.collect.outputs.assets_dir }}"
           STAGE="${{ steps.collect.outputs.stage_dir }}"
           LIBDIR="${ASSETS}/lib"
@@ -608,6 +614,7 @@ jobs:
                 echo "  Bundling: ${resolved} -> ${out}"
                 run_logged cp "$resolved" "$out"
                 run_logged chmod 644 "$out"
+                run_logged install_name_tool -id "@rpath/${name}" "$out"
                 bundle_cli_deps "$out" "@rpath"
               fi
 
@@ -634,18 +641,24 @@ jobs:
             done < <(otool -l "$binary" | awk '/LC_RPATH/{getline; getline; print $2}' || true)
 
             # Deduplicate bad rpaths (compatible with macOS Bash 3.2)
-            for rpath in "${bad_rpaths[@]}"; do
-              local found=0
-              local u
-              for u in "${unique_bad_rpaths[@]}"; do
-                [ "$u" = "$rpath" ] && found=1 && break
+            if [ "${#bad_rpaths[@]}" -gt 0 ]; then
+              for rpath in "${bad_rpaths[@]}"; do
+                local found=0
+                local u
+                if [ "${#unique_bad_rpaths[@]}" -gt 0 ]; then
+                  for u in "${unique_bad_rpaths[@]}"; do
+                    [ "$u" = "$rpath" ] && found=1 && break
+                  done
+                fi
+                [ "$found" -eq 0 ] && unique_bad_rpaths+=("$rpath")
               done
-              [ "$found" -eq 0 ] && unique_bad_rpaths+=("$rpath")
-            done
+            fi
 
-            for rpath in "${unique_bad_rpaths[@]}"; do
-              run_logged install_name_tool -delete_rpath "$rpath" "$binary"
-            done
+            if [ "${#unique_bad_rpaths[@]}" -gt 0 ]; then
+              for rpath in "${unique_bad_rpaths[@]}"; do
+                run_logged install_name_tool -delete_rpath "$rpath" "$binary"
+              done
+            fi
 
             if [ "${#unique_bad_rpaths[@]}" -gt 0 ] || ! otool -l "$binary" | awk '/LC_RPATH/{getline; getline; print $2}' | grep -Fxq "@loader_path/lib"; then
               if ! otool -l "$binary" | awk '/LC_RPATH/{getline; getline; print $2}' | grep -Fxq "@loader_path/lib"; then
@@ -664,11 +677,6 @@ jobs:
           for lib in "${LIBDIR}"/*; do
             [ -f "$lib" ] || continue
             bundle_cli_deps "$lib" "@rpath"
-            RPATHS=$(otool -l "$lib" | grep -A2 LC_RPATH | grep "path " | awk '{print $2}' | sort | uniq -d || true)
-            for rp in $RPATHS; do
-              install_name_tool -delete_rpath "$rp" "$lib" 2>/dev/null || true
-              install_name_tool -add_rpath "$rp" "$lib" 2>/dev/null || true
-            done
             run_logged codesign --force --sign - "$lib"
           done
 
