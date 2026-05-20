@@ -579,7 +579,7 @@ jobs:
           bundle_cli_deps() {
             local binary="$1"
             local change_prefix="$2"
-            local ref resolved out name
+            local ref resolved out name target
 
             while IFS= read -r ref; do
               resolved=$(resolve_cli_ref "$ref")
@@ -608,23 +608,46 @@ jobs:
                 echo "  Bundling: ${resolved} -> ${out}"
                 run_logged cp "$resolved" "$out"
                 run_logged chmod 644 "$out"
-                run_logged install_name_tool -id "@loader_path/${name}" "$out"
-                bundle_cli_deps "$out" "@loader_path"
+                bundle_cli_deps "$out" "@rpath"
               fi
 
-              run_logged install_name_tool -change "$ref" "${change_prefix}/${name}" "$binary"
+              target="${change_prefix}/${name}"
+              if [ "$ref" != "$target" ]; then
+                run_logged install_name_tool -change "$ref" "$target" "$binary"
+              fi
             done < <(otool -L "$binary" | awk 'NR > 1 {print $1}' | grep -E "($HOMEBREW_PREFIX|$GITHUB_WORKSPACE|@rpath|@loader_path)" || true)
+          }
+
+          ensure_cli_rpath() {
+            local binary="$1"
+            local rpath
+
+            if otool -l "$binary" | awk '/LC_RPATH/{getline; getline; print $2}' | grep -Fxq "@loader_path/lib"; then
+              return 0
+            fi
+
+            while IFS= read -r rpath; do
+              case "$rpath" in
+                "$GITHUB_WORKSPACE"/*|"$HOMEBREW_PREFIX"/*)
+                  run_logged install_name_tool -rpath "$rpath" "@loader_path/lib" "$binary"
+                  return 0
+                  ;;
+              esac
+            done < <(otool -l "$binary" | awk '/LC_RPATH/{getline; getline; print $2}' || true)
+
+            run_logged install_name_tool -add_rpath "@loader_path/lib" "$binary"
           }
 
           for bin in "${ASSETS}"/*; do
             [ -f "$bin" ] && [ -x "$bin" ] && [ "$(basename "$bin")" != "lib" ] || continue
-            bundle_cli_deps "$bin" "@loader_path/lib"
+            ensure_cli_rpath "$bin"
+            bundle_cli_deps "$bin" "@rpath"
             run_logged codesign --force --sign - "$bin"
           done
 
           for lib in "${LIBDIR}"/*; do
             [ -f "$lib" ] || continue
-            bundle_cli_deps "$lib" "@loader_path"
+            bundle_cli_deps "$lib" "@rpath"
             RPATHS=$(otool -l "$lib" | grep -A2 LC_RPATH | grep "path " | awk '{print $2}' | sort | uniq -d || true)
             for rp in $RPATHS; do
               install_name_tool -delete_rpath "$rp" "$lib" 2>/dev/null || true
