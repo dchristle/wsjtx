@@ -91,11 +91,13 @@ is_allowed_reference() {
   esac
 
   local prefix
-  for prefix in "${allow_prefixes[@]}"; do
-    case "$ref" in
-      "$prefix"/*) return 0 ;;
-    esac
-  done
+  if [ "${#allow_prefixes[@]}" -gt 0 ]; then
+    for prefix in "${allow_prefixes[@]}"; do
+      case "$ref" in
+        "$prefix"/*) return 0 ;;
+      esac
+    done
+  fi
 
   return 1
 }
