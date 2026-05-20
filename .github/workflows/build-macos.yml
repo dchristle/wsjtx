@@ -366,13 +366,51 @@ jobs:
 
       - name: Bundle dylibs into app
         run: |
+          set -E
           STAGE="${{ steps.collect.outputs.stage_dir }}"
           APP="${STAGE}/wsjtx.app"
           FRAMEWORKS="${APP}/Contents/Frameworks"
           GCC_LIB="${{ steps.fc.outputs.prefix }}/lib/gcc/current"
           mkdir -p "${FRAMEWORKS}"
 
-          "${GITHUB_WORKSPACE}/qt-prefix/bin/macdeployqt" "${APP}" -verbose=1
+          dump_bundle_context() {
+            local status="$1"
+            local line="$2"
+            local command="$3"
+            echo "::error::Bundle dylibs into app failed at line ${line} with status ${status}: ${command}"
+            echo "APP=${APP}"
+            echo "FRAMEWORKS=${FRAMEWORKS}"
+            echo "GCC_LIB=${GCC_LIB}"
+            echo "HOMEBREW_PREFIX=${HOMEBREW_PREFIX}"
+            echo "App executable contents:"
+            ls -la "${APP}/Contents/MacOS" || true
+            echo "Framework contents:"
+            ls -la "${FRAMEWORKS}" || true
+            echo "External references in app executables:"
+            find "${APP}/Contents/MacOS" -type f -perm +111 -print -exec otool -L {} \; 2>/dev/null || true
+            if [ -f macdeployqt.log ]; then
+              echo "macdeployqt.log:"
+              cat macdeployqt.log
+            fi
+          }
+          trap 'status=$?; dump_bundle_context "$status" "$LINENO" "$BASH_COMMAND"; exit "$status"' ERR
+
+          run_logged() {
+            echo "+ $*"
+            "$@"
+          }
+
+          echo "Running macdeployqt..."
+          set +e
+          "${GITHUB_WORKSPACE}/qt-prefix/bin/macdeployqt" "${APP}" -verbose=2 > macdeployqt.log 2>&1
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ]; then
+            echo "::error::macdeployqt failed with status ${status}"
+            dump_bundle_context "$status" "$LINENO" "macdeployqt"
+            exit "$status"
+          fi
+          cat macdeployqt.log
 
           resolve_lib() {
             local lib="$1"
@@ -401,9 +439,9 @@ jobs:
               esac
               if [ ! -f "${FRAMEWORKS}/${libname}" ]; then
                 echo "  Bundling: $resolved -> ${FRAMEWORKS}/${libname}"
-                cp "$resolved" "${FRAMEWORKS}/${libname}"
-                chmod 644 "${FRAMEWORKS}/${libname}"
-                install_name_tool -id "@executable_path/../Frameworks/${libname}" "${FRAMEWORKS}/${libname}"
+                run_logged cp "$resolved" "${FRAMEWORKS}/${libname}"
+                run_logged chmod 644 "${FRAMEWORKS}/${libname}"
+                run_logged install_name_tool -id "@executable_path/../Frameworks/${libname}" "${FRAMEWORKS}/${libname}"
                 bundle_dylib "${FRAMEWORKS}/${libname}"
               fi
               install_name_tool -change "$lib" "@executable_path/../Frameworks/${libname}" "$binary" 2>/dev/null || true
@@ -440,10 +478,37 @@ jobs:
 
       - name: Bundle dylibs into CLI tools
         run: |
+          set -E
           ASSETS="${{ steps.collect.outputs.assets_dir }}"
           STAGE="${{ steps.collect.outputs.stage_dir }}"
           LIBDIR="${ASSETS}/lib"
           mkdir -p "${LIBDIR}"
+
+          dump_cli_context() {
+            local status="$1"
+            local line="$2"
+            local command="$3"
+            echo "::error::Bundle dylibs into CLI tools failed at line ${line} with status ${status}: ${command}"
+            echo "ASSETS=${ASSETS}"
+            echo "LIBDIR=${LIBDIR}"
+            echo "HOMEBREW_PREFIX=${HOMEBREW_PREFIX}"
+            echo "Asset contents:"
+            ls -la "${ASSETS}" || true
+            echo "Library contents:"
+            ls -la "${LIBDIR}" || true
+            echo "External references in CLI assets:"
+            for bin in "${ASSETS}"/*; do
+              [ -f "$bin" ] && [ -x "$bin" ] && [ "$(basename "$bin")" != "lib" ] || continue
+              echo "== $bin =="
+              otool -L "$bin" || true
+            done
+          }
+          trap 'status=$?; dump_cli_context "$status" "$LINENO" "$BASH_COMMAND"; exit "$status"' ERR
+
+          run_logged() {
+            echo "+ $*"
+            "$@"
+          }
 
           BUNDLE_ARGS=""
           for bin in "${ASSETS}"/*; do
@@ -451,7 +516,7 @@ jobs:
               BUNDLE_ARGS="$BUNDLE_ARGS -x $bin"
             }
           done
-          dylibbundler -od -b $BUNDLE_ARGS -d "${LIBDIR}/" -p @loader_path/lib/
+          run_logged dylibbundler -od -b $BUNDLE_ARGS -d "${LIBDIR}/" -p @loader_path/lib/
 
           if find "${LIBDIR}" -name "libgomp*.dylib" -print -quit | grep -q .; then
             echo "::error::Refusing to bundle dynamic libgomp; it must be linked statically for deployable macOS artifacts."
@@ -465,13 +530,13 @@ jobs:
               fwname=$(basename "$fw")
               if [ ! -f "${LIBDIR}/${fwname}" ]; then
                 echo "  Bundling framework: ${fwname}"
-                cp "$fw" "${LIBDIR}/${fwname}"
-                chmod 644 "${LIBDIR}/${fwname}"
-                install_name_tool -id "@loader_path/lib/${fwname}" "${LIBDIR}/${fwname}"
+                run_logged cp "$fw" "${LIBDIR}/${fwname}"
+                run_logged chmod 644 "${LIBDIR}/${fwname}"
+                run_logged install_name_tool -id "@loader_path/lib/${fwname}" "${LIBDIR}/${fwname}"
                 dylibbundler -b -x "${LIBDIR}/${fwname}" -d "${LIBDIR}/" -p @loader_path/ 2>/dev/null || true
               fi
-              install_name_tool -change "$fw" "@loader_path/lib/${fwname}" "$bin"
-              codesign --force --sign - "$bin"
+              run_logged install_name_tool -change "$fw" "@loader_path/lib/${fwname}" "$bin"
+              run_logged codesign --force --sign - "$bin"
             done
           done
 
@@ -486,7 +551,7 @@ jobs:
               install_name_tool -delete_rpath "$rp" "$lib" 2>/dev/null || true
               install_name_tool -add_rpath "$rp" "$lib" 2>/dev/null || true
             done
-            codesign --force --sign - "$lib"
+            run_logged codesign --force --sign - "$lib"
           done
 
           echo "Verifying CLI tools..."
