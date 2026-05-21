@@ -145,45 +145,6 @@ jobs:
             --mode error \
             ${{ steps.fc.outputs.runtime_archives }}
 
-      - name: Cache pFUnit
-        id: pfunit-cache
-        uses: actions/cache/restore@v5
-        with:
-          path: pfunit-prefix
-          key: pfunit-macos-${{ inputs.arch }}-${{ inputs.runner }}-v4.9.0-min${{ inputs.deployment_target }}-${{ steps.fc.outputs.cache_key }}-${{ hashFiles('.github/scripts/build-pfunit-macos.sh') }}
-
-      - name: Build pFUnit
-        if: steps.pfunit-cache.outputs.cache-hit != 'true'
-        run: |
-          .github/scripts/build-pfunit-macos.sh \
-            v4.9.0 \
-            "${{ steps.fc.outputs.path }}" \
-            "${GITHUB_WORKSPACE}/pfunit-prefix" \
-            "${{ inputs.deployment_target }}" \
-            "${{ steps.fc.outputs.fortran_runtime_flags }}" \
-            "${{ steps.fc.outputs.runtime_link_flags }}"
-
-      - name: Save pFUnit cache
-        if: steps.pfunit-cache.outputs.cache-hit != 'true'
-        continue-on-error: true
-        uses: actions/cache/save@v5
-        with:
-          path: pfunit-prefix
-          key: pfunit-macos-${{ inputs.arch }}-${{ inputs.runner }}-v4.9.0-min${{ inputs.deployment_target }}-${{ steps.fc.outputs.cache_key }}-${{ hashFiles('.github/scripts/build-pfunit-macos.sh') }}
-
-      - name: Locate pFUnit config
-        id: pfunit
-        run: |
-          CONFIG=$(find "${GITHUB_WORKSPACE}/pfunit-prefix" -name PFUNITConfig.cmake | head -1)
-          if [ -z "$CONFIG" ]; then
-            echo "ERROR: PFUNITConfig.cmake not found under pfunit-prefix"
-            find "${GITHUB_WORKSPACE}/pfunit-prefix" -maxdepth 3 -type d
-            exit 1
-          fi
-          PFUNIT_DIR="$(dirname "$CONFIG")"
-          echo "Found PFUNITConfig.cmake at: $CONFIG"
-          echo "dir=${PFUNIT_DIR}" >> "$GITHUB_OUTPUT"
-
       - name: Cache libusb
         id: libusb-cache
         uses: actions/cache/restore@v5
@@ -282,7 +243,7 @@ jobs:
       - name: Configure
         run: |
           cmake -S . -B wsjtx-build \
-            -DCMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/qt-prefix;${GITHUB_WORKSPACE}/boost-prefix;${GITHUB_WORKSPACE}/fftw-prefix;${GITHUB_WORKSPACE}/libusb-prefix;${GITHUB_WORKSPACE}/hamlib-prefix;${GITHUB_WORKSPACE}/pfunit-prefix" \
+            -DCMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/qt-prefix;${GITHUB_WORKSPACE}/boost-prefix;${GITHUB_WORKSPACE}/fftw-prefix;${GITHUB_WORKSPACE}/libusb-prefix;${GITHUB_WORKSPACE}/hamlib-prefix" \
             -DCMAKE_Fortran_COMPILER="${{ steps.fc.outputs.path }}" \
             -DCMAKE_Fortran_FLAGS="${{ steps.fc.outputs.fortran_runtime_flags }}" \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=${{ inputs.deployment_target }} \
@@ -291,7 +252,6 @@ jobs:
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
             -DWSJT_SKIP_MANPAGES=ON \
             -DWSJT_BUILD_TESTS=ON \
-            -DPFUNIT_DIR="${{ steps.pfunit.outputs.dir }}" \
             -Wno-dev
 
       - name: Verify resolved dependency prefixes
