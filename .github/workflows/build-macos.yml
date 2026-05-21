@@ -470,17 +470,36 @@ jobs:
                 echo "  Bundling: $resolved -> ${FRAMEWORKS}/${libname}"
                 run_logged cp "$resolved" "${FRAMEWORKS}/${libname}"
                 run_logged chmod 644 "${FRAMEWORKS}/${libname}"
-                run_logged install_name_tool -id "@executable_path/../Frameworks/${libname}" "${FRAMEWORKS}/${libname}"
+                run_logged install_name_tool -id "@rpath/${libname}" "${FRAMEWORKS}/${libname}"
                 bundle_dylib "${FRAMEWORKS}/${libname}"
               fi
-              if [ "$lib" != "@executable_path/../Frameworks/${libname}" ]; then
-                run_logged install_name_tool -change "$lib" "@executable_path/../Frameworks/${libname}" "$binary"
+              if [ "$lib" != "@rpath/${libname}" ]; then
+                run_logged install_name_tool -change "$lib" "@rpath/${libname}" "$binary"
               fi
             done
           }
 
+          ensure_app_rpath() {
+            local binary="$1"
+            local rpath
+
+            while IFS= read -r rpath; do
+              [ -n "$rpath" ] || continue
+              case "$rpath" in
+                "$GITHUB_WORKSPACE"/*|"$HOMEBREW_PREFIX"/*)
+                  run_logged install_name_tool -delete_rpath "$rpath" "$binary"
+                  ;;
+              esac
+            done < <(otool -l "$binary" | awk '/LC_RPATH/{getline; getline; print $2}' || true)
+
+            if ! otool -l "$binary" | awk '/LC_RPATH/{getline; getline; print $2}' | grep -Fxq "@executable_path/../Frameworks"; then
+              run_logged install_name_tool -add_rpath "@executable_path/../Frameworks" "$binary"
+            fi
+          }
+
           for exe in "${APP}/Contents/MacOS/"*; do
             [ -f "$exe" ] && [ -x "$exe" ] && {
+              ensure_app_rpath "$exe"
               bundle_dylib "$exe"
               for fw in $(otool -L "$exe" | awk '{print $1}' | grep '\.framework/' || true); do
                 fwname=$(basename "$fw")
