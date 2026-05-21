@@ -162,6 +162,7 @@ otool -L "$compiler"
 runtime_link_flags="${libgfortran} ${libquadmath} ${libgcc}"
 fortran_runtime_flags="-static-libgcc -static-libgfortran -isysroot ${sdkroot}"
 runtime_archives="${archives[*]}"
+cache_key="${package_name}-${package_sha256}"
 
 if [ "$github_output" -eq 1 ]; then
   github_output_file="${GITHUB_OUTPUT:-/dev/stdout}"
@@ -169,9 +170,11 @@ if [ "$github_output" -eq 1 ]; then
     echo "path=${compiler}"
     echo "prefix=${prefix}"
     echo "original_prefix=/usr/local/gfortran"
+    echo "runtime_lib_dir=${prefix}/${runtime_dir}"
     echo "fortran_runtime_flags=${fortran_runtime_flags}"
     echo "runtime_link_flags=${runtime_link_flags}"
     echo "runtime_archives=${runtime_archives}"
     echo "libgomp=${libgomp}"
+    echo "cache_key=${cache_key}"
   } >> "$github_output_file"
 fi

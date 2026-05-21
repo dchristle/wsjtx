@@ -60,7 +60,7 @@ jobs:
         run: echo "HOMEBREW_PREFIX=$(brew --prefix)" >> "$GITHUB_ENV"
 
       - name: Install dependencies
-        run: brew install cmake gcc autoconf automake libtool asciidoctor
+        run: brew install cmake autoconf automake libtool asciidoctor
 
       - name: Compute Qt cache key
         id: qt-key
@@ -87,6 +87,17 @@ jobs:
             --allow-prefix "${GITHUB_WORKSPACE}/qt-prefix" \
             "${GITHUB_WORKSPACE}/qt-prefix"
 
+      - name: Install controlled ARM gfortran
+        id: controlled-arm-fc
+        if: inputs.arch == 'arm64'
+        run: |
+          .github/scripts/install-r-macos-gfortran.sh \
+            --target "${{ inputs.deployment_target }}" \
+            --arch "${{ inputs.arch }}" \
+            --work-dir "${RUNNER_TEMP}/r-macos-gfortran" \
+            --prefix "${GITHUB_WORKSPACE}/gfortran-prefix" \
+            --github-output
+
       - name: Install controlled Intel gfortran
         id: controlled-fc
         if: inputs.arch == 'x86_64'
@@ -106,75 +117,40 @@ jobs:
             echo "path=${{ steps.controlled-fc.outputs.path }}" >> "$GITHUB_OUTPUT"
             echo "prefix=${{ steps.controlled-fc.outputs.prefix }}" >> "$GITHUB_OUTPUT"
             echo "original_prefix=${{ steps.controlled-fc.outputs.original_prefix }}" >> "$GITHUB_OUTPUT"
+            echo "runtime_lib_dir=${{ steps.controlled-fc.outputs.runtime_lib_dir }}" >> "$GITHUB_OUTPUT"
             echo "libgomp=${{ steps.controlled-fc.outputs.libgomp }}" >> "$GITHUB_OUTPUT"
             echo "fortran_runtime_flags=${{ steps.controlled-fc.outputs.fortran_runtime_flags }}" >> "$GITHUB_OUTPUT"
             echo "runtime_link_flags=${{ steps.controlled-fc.outputs.runtime_link_flags }}" >> "$GITHUB_OUTPUT"
             echo "runtime_archives=${{ steps.controlled-fc.outputs.runtime_archives }}" >> "$GITHUB_OUTPUT"
+            echo "cache_key=${{ steps.controlled-fc.outputs.cache_key }}" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          FC="$(brew --prefix gcc)/bin/gfortran"
-          [ -f "$FC" ] || FC="$(ls $HOMEBREW_PREFIX/bin/gfortran-* 2>/dev/null | sort | tail -1)"
-          echo "Found gfortran: $FC"
-          echo "path=$FC" >> "$GITHUB_OUTPUT"
-          GCC_PREFIX="$(brew --prefix gcc)"
-          echo "prefix=${GCC_PREFIX}" >> "$GITHUB_OUTPUT"
-          echo "original_prefix=${GCC_PREFIX}" >> "$GITHUB_OUTPUT"
-          echo "fortran_runtime_flags=-static-libgcc -static-libgfortran -static-libquadmath" >> "$GITHUB_OUTPUT"
+          echo "Using controlled gfortran: ${{ steps.controlled-arm-fc.outputs.path }}"
+          echo "path=${{ steps.controlled-arm-fc.outputs.path }}" >> "$GITHUB_OUTPUT"
+          echo "prefix=${{ steps.controlled-arm-fc.outputs.prefix }}" >> "$GITHUB_OUTPUT"
+          echo "original_prefix=${{ steps.controlled-arm-fc.outputs.original_prefix }}" >> "$GITHUB_OUTPUT"
+          echo "runtime_lib_dir=${{ steps.controlled-arm-fc.outputs.runtime_lib_dir }}" >> "$GITHUB_OUTPUT"
+          echo "libgomp=${{ steps.controlled-arm-fc.outputs.libgomp }}" >> "$GITHUB_OUTPUT"
+          echo "fortran_runtime_flags=${{ steps.controlled-arm-fc.outputs.fortran_runtime_flags }}" >> "$GITHUB_OUTPUT"
+          echo "runtime_link_flags=${{ steps.controlled-arm-fc.outputs.runtime_link_flags }}" >> "$GITHUB_OUTPUT"
+          echo "runtime_archives=${{ steps.controlled-arm-fc.outputs.runtime_archives }}" >> "$GITHUB_OUTPUT"
+          echo "cache_key=${{ steps.controlled-arm-fc.outputs.cache_key }}" >> "$GITHUB_OUTPUT"
 
-          LIBGOMP="$("$FC" -print-file-name=libgomp.a)"
-          if [ ! -f "$LIBGOMP" ]; then
-            echo "::error::Static libgomp archive not found via $FC"
-            exit 1
-          fi
-          echo "libgomp=$LIBGOMP" >> "$GITHUB_OUTPUT"
-
-          RUNTIME_LINK_FLAGS=""
-          RUNTIME_ARCHIVES=()
-          for lib in \
-            "$("$FC" -print-file-name=libgfortran.a)" \
-            "$("$FC" -print-file-name=libquadmath.a)" \
-            "$("$FC" -print-libgcc-file-name)"
-          do
-            if [ -f "$lib" ]; then
-              RUNTIME_LINK_FLAGS="${RUNTIME_LINK_FLAGS} ${lib}"
-              RUNTIME_ARCHIVES+=("$lib")
-            fi
-          done
-          echo "runtime_link_flags=${RUNTIME_LINK_FLAGS# }" >> "$GITHUB_OUTPUT"
-          echo "runtime_archives=${RUNTIME_ARCHIVES[*]} $LIBGOMP" >> "$GITHUB_OUTPUT"
-
-      # The Intel path uses a controlled runtime archive set and treats
-      # deployment-target findings as fatal. The arm64 path still reports
-      # Homebrew runtime deployment-target metadata as warnings.
       - name: Verify static Fortran runtime deployment targets
         run: |
-          mode=warn
-          if [ "${{ inputs.arch }}" = "x86_64" ]; then
-            mode=error
-          fi
           .github/scripts/verify-macos-static-archives.sh \
             --target "${{ inputs.deployment_target }}" \
             --arch "${{ inputs.arch }}" \
-            --mode "$mode" \
+            --mode error \
             ${{ steps.fc.outputs.runtime_archives }}
-
-      - name: Probe R macOS gfortran package
-        if: inputs.arch == 'arm64'
-        continue-on-error: true
-        timeout-minutes: 10
-        run: |
-          .github/scripts/probe-r-macos-gfortran.sh \
-            --target "${{ inputs.deployment_target }}" \
-            --arch "${{ inputs.arch }}" \
-            --work-dir "${RUNNER_TEMP}/r-macos-gfortran-probe"
 
       - name: Cache pFUnit
         id: pfunit-cache
         uses: actions/cache/restore@v5
         with:
           path: pfunit-prefix
-          key: pfunit-macos-${{ inputs.arch }}-${{ inputs.runner }}-v4.9.0-min${{ inputs.deployment_target }}-${{ hashFiles('.github/scripts/build-pfunit-macos.sh') }}
+          key: pfunit-macos-${{ inputs.arch }}-${{ inputs.runner }}-v4.9.0-min${{ inputs.deployment_target }}-${{ steps.fc.outputs.cache_key }}-${{ hashFiles('.github/scripts/build-pfunit-macos.sh') }}
 
       - name: Build pFUnit
         if: steps.pfunit-cache.outputs.cache-hit != 'true'
@@ -190,7 +166,7 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: pfunit-prefix
-          key: pfunit-macos-${{ inputs.arch }}-${{ inputs.runner }}-v4.9.0-min${{ inputs.deployment_target }}-${{ hashFiles('.github/scripts/build-pfunit-macos.sh') }}
+          key: pfunit-macos-${{ inputs.arch }}-${{ inputs.runner }}-v4.9.0-min${{ inputs.deployment_target }}-${{ steps.fc.outputs.cache_key }}-${{ hashFiles('.github/scripts/build-pfunit-macos.sh') }}
 
       - name: Locate pFUnit config
         id: pfunit
@@ -413,7 +389,7 @@ jobs:
           FRAMEWORKS="${APP}/Contents/Frameworks"
           FORTRAN_PREFIX="${{ steps.fc.outputs.prefix }}"
           FORTRAN_ORIGINAL_PREFIX="${{ steps.fc.outputs.original_prefix }}"
-          GCC_LIB="${FORTRAN_PREFIX}/lib/gcc/current"
+          GCC_LIB="${{ steps.fc.outputs.runtime_lib_dir }}"
           mkdir -p "${FRAMEWORKS}"
 
           dump_bundle_context() {
@@ -604,7 +580,7 @@ jobs:
           LIBDIR="${ASSETS}/lib"
           FORTRAN_PREFIX="${{ steps.fc.outputs.prefix }}"
           FORTRAN_ORIGINAL_PREFIX="${{ steps.fc.outputs.original_prefix }}"
-          GCC_LIB="${FORTRAN_PREFIX}/lib/gcc/current"
+          GCC_LIB="${{ steps.fc.outputs.runtime_lib_dir }}"
           mkdir -p "${LIBDIR}"
 
           dump_cli_context() {
