@@ -87,23 +87,45 @@ jobs:
             --allow-prefix "${GITHUB_WORKSPACE}/qt-prefix" \
             "${GITHUB_WORKSPACE}/qt-prefix"
 
+      - name: Install controlled Intel gfortran
+        id: controlled-fc
+        if: inputs.arch == 'x86_64'
+        run: |
+          .github/scripts/install-fxcoudert-gfortran-macos.sh \
+            --target "${{ inputs.deployment_target }}" \
+            --arch "${{ inputs.arch }}" \
+            --work-dir "${RUNNER_TEMP}/fxcoudert-gfortran" \
+            --prefix "${GITHUB_WORKSPACE}/gfortran-prefix" \
+            --github-output
+
       - name: Locate gfortran
         id: fc
         run: |
+          if [ "${{ inputs.arch }}" = "x86_64" ]; then
+            echo "Using controlled gfortran: ${{ steps.controlled-fc.outputs.path }}"
+            echo "path=${{ steps.controlled-fc.outputs.path }}" >> "$GITHUB_OUTPUT"
+            echo "prefix=${{ steps.controlled-fc.outputs.prefix }}" >> "$GITHUB_OUTPUT"
+            echo "libgomp=${{ steps.controlled-fc.outputs.libgomp }}" >> "$GITHUB_OUTPUT"
+            echo "fortran_runtime_flags=${{ steps.controlled-fc.outputs.fortran_runtime_flags }}" >> "$GITHUB_OUTPUT"
+            echo "runtime_link_flags=${{ steps.controlled-fc.outputs.runtime_link_flags }}" >> "$GITHUB_OUTPUT"
+            echo "runtime_archives=${{ steps.controlled-fc.outputs.runtime_archives }}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           FC="$(brew --prefix gcc)/bin/gfortran"
           [ -f "$FC" ] || FC="$(ls $HOMEBREW_PREFIX/bin/gfortran-* 2>/dev/null | sort | tail -1)"
           echo "Found gfortran: $FC"
           echo "path=$FC" >> "$GITHUB_OUTPUT"
           GCC_PREFIX="$(brew --prefix gcc)"
           echo "prefix=${GCC_PREFIX}" >> "$GITHUB_OUTPUT"
+          echo "fortran_runtime_flags=-static-libgcc -static-libgfortran -static-libquadmath" >> "$GITHUB_OUTPUT"
+
           LIBGOMP="$("$FC" -print-file-name=libgomp.a)"
           if [ ! -f "$LIBGOMP" ]; then
             echo "::error::Static libgomp archive not found via $FC"
             exit 1
           fi
           echo "libgomp=$LIBGOMP" >> "$GITHUB_OUTPUT"
-
-          echo "fortran_runtime_flags=-static-libgcc -static-libgfortran -static-libquadmath" >> "$GITHUB_OUTPUT"
 
           RUNTIME_LINK_FLAGS=""
           RUNTIME_ARCHIVES=()
@@ -120,20 +142,23 @@ jobs:
           echo "runtime_link_flags=${RUNTIME_LINK_FLAGS# }" >> "$GITHUB_OUTPUT"
           echo "runtime_archives=${RUNTIME_ARCHIVES[*]} $LIBGOMP" >> "$GITHUB_OUTPUT"
 
-      # Runs in warn mode: the Fortran/OpenMP runtime archives come from the
-      # Homebrew gcc bottle, whose member deployment targets this workflow
-      # does not control. Downgrade findings to warnings until a real run
-      # shows whether the bottle's archives actually exceed the artifact
-      # target; promote to --mode error once that is confirmed safe.
+      # The Intel path uses a controlled runtime archive set and treats
+      # deployment-target findings as fatal. The arm64 path still reports
+      # Homebrew runtime deployment-target metadata as warnings.
       - name: Verify static Fortran runtime deployment targets
         run: |
+          mode=warn
+          if [ "${{ inputs.arch }}" = "x86_64" ]; then
+            mode=error
+          fi
           .github/scripts/verify-macos-static-archives.sh \
             --target "${{ inputs.deployment_target }}" \
             --arch "${{ inputs.arch }}" \
-            --mode warn \
+            --mode "$mode" \
             ${{ steps.fc.outputs.runtime_archives }}
 
       - name: Probe R macOS gfortran package
+        if: inputs.arch == 'arm64'
         continue-on-error: true
         timeout-minutes: 10
         run: |
