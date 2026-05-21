@@ -158,7 +158,10 @@ jobs:
           .github/scripts/build-pfunit-macos.sh \
             v4.9.0 \
             "${{ steps.fc.outputs.path }}" \
-            "${GITHUB_WORKSPACE}/pfunit-prefix"
+            "${GITHUB_WORKSPACE}/pfunit-prefix" \
+            "${{ inputs.deployment_target }}" \
+            "${{ steps.fc.outputs.fortran_runtime_flags }}" \
+            "${{ steps.fc.outputs.runtime_link_flags }}"
 
       - name: Save pFUnit cache
         if: steps.pfunit-cache.outputs.cache-hit != 'true'
