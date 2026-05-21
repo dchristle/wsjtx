@@ -164,12 +164,14 @@ fortran_runtime_flags="-static-libgcc -static-libgfortran -isysroot ${sdkroot}"
 runtime_archives="${archives[*]}"
 
 if [ "$github_output" -eq 1 ]; then
+  github_output_file="${GITHUB_OUTPUT:-/dev/stdout}"
   {
     echo "path=${compiler}"
     echo "prefix=${prefix}"
+    echo "original_prefix=/usr/local/gfortran"
     echo "fortran_runtime_flags=${fortran_runtime_flags}"
     echo "runtime_link_flags=${runtime_link_flags}"
     echo "runtime_archives=${runtime_archives}"
     echo "libgomp=${libgomp}"
-  } >> "$GITHUB_OUTPUT"
+  } >> "$github_output_file"
 fi

@@ -105,6 +105,7 @@ jobs:
             echo "Using controlled gfortran: ${{ steps.controlled-fc.outputs.path }}"
             echo "path=${{ steps.controlled-fc.outputs.path }}" >> "$GITHUB_OUTPUT"
             echo "prefix=${{ steps.controlled-fc.outputs.prefix }}" >> "$GITHUB_OUTPUT"
+            echo "original_prefix=${{ steps.controlled-fc.outputs.original_prefix }}" >> "$GITHUB_OUTPUT"
             echo "libgomp=${{ steps.controlled-fc.outputs.libgomp }}" >> "$GITHUB_OUTPUT"
             echo "fortran_runtime_flags=${{ steps.controlled-fc.outputs.fortran_runtime_flags }}" >> "$GITHUB_OUTPUT"
             echo "runtime_link_flags=${{ steps.controlled-fc.outputs.runtime_link_flags }}" >> "$GITHUB_OUTPUT"
@@ -118,6 +119,7 @@ jobs:
           echo "path=$FC" >> "$GITHUB_OUTPUT"
           GCC_PREFIX="$(brew --prefix gcc)"
           echo "prefix=${GCC_PREFIX}" >> "$GITHUB_OUTPUT"
+          echo "original_prefix=${GCC_PREFIX}" >> "$GITHUB_OUTPUT"
           echo "fortran_runtime_flags=-static-libgcc -static-libgfortran -static-libquadmath" >> "$GITHUB_OUTPUT"
 
           LIBGOMP="$("$FC" -print-file-name=libgomp.a)"
@@ -409,7 +411,9 @@ jobs:
           STAGE="${{ steps.collect.outputs.stage_dir }}"
           APP="${STAGE}/wsjtx.app"
           FRAMEWORKS="${APP}/Contents/Frameworks"
-          GCC_LIB="${{ steps.fc.outputs.prefix }}/lib/gcc/current"
+          FORTRAN_PREFIX="${{ steps.fc.outputs.prefix }}"
+          FORTRAN_ORIGINAL_PREFIX="${{ steps.fc.outputs.original_prefix }}"
+          GCC_LIB="${FORTRAN_PREFIX}/lib/gcc/current"
           mkdir -p "${FRAMEWORKS}"
 
           dump_bundle_context() {
@@ -419,6 +423,8 @@ jobs:
             echo "::error::Bundle dylibs into app failed at line ${line} with status ${status}: ${command}"
             echo "APP=${APP}"
             echo "FRAMEWORKS=${FRAMEWORKS}"
+            echo "FORTRAN_PREFIX=${FORTRAN_PREFIX}"
+            echo "FORTRAN_ORIGINAL_PREFIX=${FORTRAN_ORIGINAL_PREFIX}"
             echo "GCC_LIB=${GCC_LIB}"
             echo "HOMEBREW_PREFIX=${HOMEBREW_PREFIX}"
             echo "App executable contents:"
@@ -453,6 +459,10 @@ jobs:
 
           resolve_lib() {
             local lib="$1"
+            if [ -n "$FORTRAN_ORIGINAL_PREFIX" ] && [[ "$lib" == "$FORTRAN_ORIGINAL_PREFIX"/* ]]; then
+              local relocated="${FORTRAN_PREFIX}/${lib#"$FORTRAN_ORIGINAL_PREFIX"/}"
+              [ -f "$relocated" ] && echo "$relocated" && return 0
+            fi
             if [[ "$lib" == $HOMEBREW_PREFIX/* ]]; then
               echo "$lib"
               return 0
@@ -466,6 +476,7 @@ jobs:
                 "$GITHUB_WORKSPACE/boost-prefix/lib" \
                 "$GITHUB_WORKSPACE/fftw-prefix/lib" \
                 "$GITHUB_WORKSPACE/libusb-prefix/lib" \
+                "$FORTRAN_PREFIX/lib" \
                 "$GCC_LIB" \
                 "$HOMEBREW_PREFIX/lib"
               do
@@ -560,7 +571,9 @@ jobs:
           ASSETS="${{ steps.collect.outputs.assets_dir }}"
           STAGE="${{ steps.collect.outputs.stage_dir }}"
           LIBDIR="${ASSETS}/lib"
-          GCC_LIB="${{ steps.fc.outputs.prefix }}/lib/gcc/current"
+          FORTRAN_PREFIX="${{ steps.fc.outputs.prefix }}"
+          FORTRAN_ORIGINAL_PREFIX="${{ steps.fc.outputs.original_prefix }}"
+          GCC_LIB="${FORTRAN_PREFIX}/lib/gcc/current"
           mkdir -p "${LIBDIR}"
 
           dump_cli_context() {
@@ -570,6 +583,8 @@ jobs:
             echo "::error::Bundle dylibs into CLI tools failed at line ${line} with status ${status}: ${command}"
             echo "ASSETS=${ASSETS}"
             echo "LIBDIR=${LIBDIR}"
+            echo "FORTRAN_PREFIX=${FORTRAN_PREFIX}"
+            echo "FORTRAN_ORIGINAL_PREFIX=${FORTRAN_ORIGINAL_PREFIX}"
             echo "GCC_LIB=${GCC_LIB}"
             echo "HOMEBREW_PREFIX=${HOMEBREW_PREFIX}"
             echo "Asset contents:"
@@ -593,6 +608,12 @@ jobs:
           resolve_cli_ref() {
             local ref="$1"
             local name="" suffix=""
+
+            if [ -n "$FORTRAN_ORIGINAL_PREFIX" ] && [[ "$ref" == "$FORTRAN_ORIGINAL_PREFIX"/* ]]; then
+              local relocated="${FORTRAN_PREFIX}/${ref#"$FORTRAN_ORIGINAL_PREFIX"/}"
+              [ -f "$relocated" ] && echo "$relocated"
+              return 0
+            fi
 
             case "$ref" in
               /usr/lib/*|/System/Library/*)
@@ -631,6 +652,7 @@ jobs:
                   "${GITHUB_WORKSPACE}/boost-prefix/lib" \
                   "${GITHUB_WORKSPACE}/fftw-prefix/lib" \
                   "${GITHUB_WORKSPACE}/libusb-prefix/lib" \
+                  "${FORTRAN_PREFIX}/lib" \
                   "${GCC_LIB}" \
                   "${HOMEBREW_PREFIX}/lib"
                 do
