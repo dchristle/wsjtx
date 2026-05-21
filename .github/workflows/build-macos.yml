@@ -486,9 +486,26 @@ jobs:
             return 0
           }
 
+          should_bundle_ref() {
+            local ref="$1"
+            case "$ref" in
+              *Qt*.framework/*)
+                return 1
+                ;;
+              "$FORTRAN_ORIGINAL_PREFIX"/*|"$HOMEBREW_PREFIX"/*|"$GITHUB_WORKSPACE"/*|@rpath/*)
+                return 0
+                ;;
+              *)
+                return 1
+                ;;
+            esac
+          }
+
           bundle_dylib() {
             local binary="$1"
-            for lib in $(otool -L "$binary" | awk '{print $1}' | grep -E "($HOMEBREW_PREFIX|$GITHUB_WORKSPACE|@rpath)" | grep -v Qt || true); do
+            local lib
+            while IFS= read -r lib; do
+              should_bundle_ref "$lib" || continue
               local resolved
               resolved=$(resolve_lib "$lib")
               if [ -z "$resolved" ]; then
@@ -513,7 +530,7 @@ jobs:
               if [ "$lib" != "@rpath/${libname}" ]; then
                 run_logged install_name_tool -change "$lib" "@rpath/${libname}" "$binary"
               fi
-            done
+            done < <(otool -L "$binary" | awk 'NR > 1 {print $1}' || true)
           }
 
           ensure_app_rpath() {
@@ -555,10 +572,24 @@ jobs:
             [ -f "$fw" ] && bundle_dylib "$fw"
           done
 
+          for exe in "${APP}/Contents/MacOS/"*; do
+            [ -f "$exe" ] && [ -x "$exe" ] && bundle_dylib "$exe"
+          done
+
           echo "Checking for remaining external references..."
-          REMAINING=$(find "${APP}/Contents/MacOS" -type f -perm +111 -exec otool -L {} \; 2>/dev/null | grep "$HOMEBREW_PREFIX" || true)
+          REMAINING=$(
+            find "${APP}/Contents/MacOS" -type f -perm +111 -print 2>/dev/null | while IFS= read -r binary; do
+              while IFS= read -r ref; do
+                case "$ref" in
+                  "$FORTRAN_ORIGINAL_PREFIX"/*|"$HOMEBREW_PREFIX"/*|"$GITHUB_WORKSPACE"/*)
+                    echo "${binary}: ${ref}"
+                    ;;
+                esac
+              done < <(otool -L "$binary" | awk 'NR > 1 {print $1}' || true)
+            done
+          )
           if [ -n "$REMAINING" ]; then
-            echo "::error::External Homebrew paths still present:"
+            echo "::error::External build-time paths still present:"
             echo "$REMAINING"
             exit 1
           else
