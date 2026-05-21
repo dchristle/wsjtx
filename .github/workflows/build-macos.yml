@@ -586,7 +586,7 @@ jobs:
                     ;;
                 esac
               done < <(otool -L "$binary" | awk 'NR > 1 {print $1}' || true)
-            done
+            done || true
           )
           if [ -n "$REMAINING" ]; then
             echo "::error::External build-time paths still present:"
