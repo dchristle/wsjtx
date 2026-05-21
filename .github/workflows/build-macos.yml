@@ -577,20 +577,20 @@ jobs:
           done
 
           echo "Checking for remaining external references..."
-          REMAINING=$(
-            find "${APP}/Contents/MacOS" -type f -perm +111 -print 2>/dev/null | while IFS= read -r binary; do
-              while IFS= read -r ref; do
-                case "$ref" in
-                  "$FORTRAN_ORIGINAL_PREFIX"/*|"$HOMEBREW_PREFIX"/*|"$GITHUB_WORKSPACE"/*)
-                    echo "${binary}: ${ref}"
-                    ;;
-                esac
-              done < <(otool -L "$binary" | awk 'NR > 1 {print $1}' || true)
-            done || true
-          )
-          if [ -n "$REMAINING" ]; then
+          remaining_refs="${RUNNER_TEMP:-/tmp}/wsjtx-app-remaining-refs.txt"
+          : > "$remaining_refs"
+          while IFS= read -r binary; do
+            while IFS= read -r ref; do
+              case "$ref" in
+                "$FORTRAN_ORIGINAL_PREFIX"/*|"$HOMEBREW_PREFIX"/*|"$GITHUB_WORKSPACE"/*)
+                  echo "${binary}: ${ref}" >> "$remaining_refs"
+                  ;;
+              esac
+            done < <(otool -L "$binary" | awk 'NR > 1 {print $1}' || true)
+          done < <(find "${APP}/Contents/MacOS" -type f -perm +111 -print 2>/dev/null)
+          if [ -s "$remaining_refs" ]; then
             echo "::error::External build-time paths still present:"
-            echo "$REMAINING"
+            cat "$remaining_refs"
             exit 1
           else
             echo "All dylibs bundled successfully"
