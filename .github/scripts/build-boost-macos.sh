@@ -12,12 +12,30 @@ deployment_target="$3"
 prefix="$4"
 version_underscores=${version//./_}
 boost_arch=x86
+expected_sha256=""
+
+case "$version" in
+  1.85.0)
+    expected_sha256="7009fe1faa1697476bdc7027703a2badb84e849b7b0baad5086b087b971f8617"
+    ;;
+  *)
+    echo "Unsupported Boost version: $version" >&2
+    exit 2
+    ;;
+esac
 
 if [ "$arch" = "arm64" ]; then
   boost_arch=arm
 fi
 
-curl -L -o boost.tar.bz2 "https://archives.boost.io/release/${version}/source/boost_${version_underscores}.tar.bz2"
+curl -L --fail --retry 5 --retry-delay 10 -o boost.tar.bz2 "https://archives.boost.io/release/${version}/source/boost_${version_underscores}.tar.bz2"
+actual_sha256="$(shasum -a 256 boost.tar.bz2 | awk '{print $1}')"
+if [ "$actual_sha256" != "$expected_sha256" ]; then
+  echo "Boost source SHA-256 mismatch" >&2
+  echo "Expected: $expected_sha256" >&2
+  echo "Actual:   $actual_sha256" >&2
+  exit 1
+fi
 tar -xjf boost.tar.bz2
 cd "boost_${version_underscores}"
 

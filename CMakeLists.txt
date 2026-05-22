@@ -1044,7 +1044,7 @@ if (APPLE)
       )
   endif ()
   if (NOT WSJT_MACOS_LIBGOMP_LIBRARY OR NOT EXISTS "${WSJT_MACOS_LIBGOMP_LIBRARY}")
-    message (FATAL_ERROR "Static GNU OpenMP runtime archive not found; set WSJT_MACOS_LIBGOMP_LIBRARY")
+    message (FATAL_ERROR "Static GNU OpenMP runtime archive not found. Install a GNU Fortran/OpenMP runtime that provides libgomp.a, or set WSJT_MACOS_LIBGOMP_LIBRARY to the archive path. Deployable macOS builds intentionally link libgomp statically instead of bundling a package-manager libgomp dylib.")
   endif ()
 endif ()
 
